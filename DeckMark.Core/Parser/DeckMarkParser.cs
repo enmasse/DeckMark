@@ -349,18 +349,47 @@ public static partial class DeckMarkParser
 
     private static ContentBlock? ReadMarkdownBlock(List<string> lines, ref int pos)
     {
+        // Skip leading blank lines
+        while (pos < lines.Count && string.IsNullOrWhiteSpace(lines[pos]))
+            pos++;
+
+        if (pos >= lines.Count) return null;
+
+        var firstLine = lines[pos];
+
+        // A heading line is always a single-line block
+        if (firstLine.TrimStart().StartsWith('#'))
+        {
+            pos++;
+            return new ContentBlock { Kind = BlockKind.Heading, RawContent = firstLine.Trim() };
+        }
+
         var sb = new StringBuilder();
-        // Accumulate until blank line or special line
+        var startKind = DetermineMarkdownKind(firstLine);
+
+        // Accumulate until blank line, heading, or special line
         while (pos < lines.Count)
         {
             var line = lines[pos];
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                pos++; // consume the blank line
+                break;
+            }
             if (line.TrimStart().StartsWith(":::") ||
                 line.TrimStart().StartsWith("```") ||
                 ImageRe.IsMatch(line.Trim()))
                 break;
+
+            // A heading mid-block ends the current block (heading stays for next call)
+            if (line.TrimStart().StartsWith('#') && sb.Length > 0)
+                break;
+
             sb.AppendLine(line);
             pos++;
         }
+
         var raw = sb.ToString().TrimEnd();
         if (string.IsNullOrWhiteSpace(raw)) return null;
 

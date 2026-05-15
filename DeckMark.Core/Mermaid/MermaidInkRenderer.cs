@@ -13,7 +13,12 @@ public sealed class MermaidInkRenderer : IMermaidRenderer
     {
         try
         {
-            var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(mermaidSource));
+            // mermaid.ink requires URL-safe Base64 (no +, /, or = padding)
+            var bytes = System.Text.Encoding.UTF8.GetBytes(mermaidSource);
+            var encoded = Convert.ToBase64String(bytes)
+                .Replace('+', '-')
+                .Replace('/', '_')
+                .TrimEnd('=');
             var url = BaseUrl + encoded;
             var response = await Http.GetAsync(url, cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
