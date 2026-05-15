@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="DeckMark.Core/DeckMark.Core.csproj" />
+  <Project Path="DeckMark.Tests/DeckMark.Tests.csproj" />
+  <Project Path="DeckMark/DeckMark.csproj" />
+</Solution>
