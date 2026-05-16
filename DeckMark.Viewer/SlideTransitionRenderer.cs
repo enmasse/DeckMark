@@ -9,6 +9,7 @@ internal sealed class SlideTransitionRenderer : IDisposable
     private const float FieldOfViewY = MathF.PI / 4f;
     private const float NearPlane = 64f;
     private const float FarPlane = 8192f;
+    private const float TextureOversample = 2f;
 
     private static readonly Vector2[] LocalCorners =
     [
@@ -142,6 +143,7 @@ internal sealed class SlideTransitionRenderer : IDisposable
         _gl.UseProgram(0);
     }
 
+
     private void DrawVisual(ProjectionContext context, SlideVisual visual)
     {
         if (visual.Opacity <= 0.001f)
@@ -189,12 +191,15 @@ internal sealed class SlideTransitionRenderer : IDisposable
         if (_slideTextures.TryGetValue(slideIndex, out uint existingTexture))
             return existingTexture;
 
-        var info = new SKImageInfo((int)SlideRenderer.SlideWidth, (int)SlideRenderer.SlideHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
+        int textureWidth = (int)(SlideRenderer.SlideWidth * TextureOversample);
+        int textureHeight = (int)(SlideRenderer.SlideHeight * TextureOversample);
+        var info = new SKImageInfo(textureWidth, textureHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
         using var surface = SKSurface.Create(info);
         if (surface is null)
             return 0;
 
         surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Scale(TextureOversample, TextureOversample);
         _renderSlide(surface.Canvas, slideIndex);
         surface.Canvas.Flush();
 

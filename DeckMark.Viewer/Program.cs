@@ -33,8 +33,8 @@ if (deck.Slides.Count == 0)
 var state = new ViewerState { SlideCount = deck.Slides.Count };
 
 // Pre-render mermaid diagrams before opening the window
-var mermaidRenderer = new MermaidInkRenderer();
-var diagrams = new Dictionary<string, SkiaSharp.SKImage?>();
+var mermaidRenderer = new MermaidInkRenderer(MermaidRenderFormat.Png);
+var diagrams = new Dictionary<string, MermaidRenderAsset?>();
 foreach (var slide in deck.Slides)
     CollectMermaid(slide.Body);
 var renderer = new SlideRenderer(diagrams);
@@ -45,8 +45,8 @@ void CollectMermaid(IEnumerable<DeckMark.Core.Model.ContentBlock> blocks)
     {
         if (block.Kind == DeckMark.Core.Model.BlockKind.MermaidBlock && !diagrams.ContainsKey(block.RawContent))
         {
-            byte[]? png = Task.Run(() => mermaidRenderer.RenderAsync(block.RawContent)).GetAwaiter().GetResult();
-            diagrams[block.RawContent] = png is not null ? SkiaSharp.SKImage.FromEncodedData(png) : null;
+            MermaidRenderAsset? asset = Task.Run(() => mermaidRenderer.RenderAsync(block.RawContent)).GetAwaiter().GetResult();
+            diagrams[block.RawContent] = asset;
         }
         if (block.Kind == DeckMark.Core.Model.BlockKind.Columns)
         {
@@ -217,7 +217,7 @@ void RenderWindow(WindowRenderState target)
 void RenderSlide(SKCanvas canvas, int slideIndex)
 {
     var slide = deck.Slides[slideIndex];
-    renderer.Draw(canvas, slide, deck.Header, slideIndex, deck.Slides.Count);
+    renderer.Draw(canvas, slide, deck.Header, slideIndex, deck.Slides.Count, includeMermaid: true);
 }
 
 static void PrintNotes(Slide slide, int index, int total)

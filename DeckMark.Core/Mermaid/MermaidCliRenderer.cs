@@ -8,20 +8,27 @@ namespace DeckMark.Core.Mermaid;
 public sealed class MermaidCliRenderer : IMermaidRenderer
 {
     private readonly string _mmdc;
+    private readonly MermaidRenderFormat _format;
 
     /// <param name="mmdcPath">Path to the mmdc executable. Defaults to "mmdc" on PATH.</param>
-    public MermaidCliRenderer(string mmdcPath = "mmdc")
+    /// <param name="format">Requested Mermaid output format.</param>
+    public MermaidCliRenderer(string mmdcPath = "mmdc", MermaidRenderFormat format = MermaidRenderFormat.Png)
     {
         _mmdc = mmdcPath;
+        _format = format;
     }
 
-    public async Task<byte[]?> RenderAsync(string mermaidSource, CancellationToken cancellationToken = default)
+    public async Task<MermaidRenderAsset?> RenderAsync(string mermaidSource, CancellationToken cancellationToken = default)
     {
+        string effectiveSource = _format == MermaidRenderFormat.Svg
+            ? EnsureSvgCompatibleSource(mermaidSource)
+            : mermaidSource;
+
         var inputFile = Path.GetTempFileName() + ".mmd";
-        var outputFile = Path.GetTempFileName() + ".png";
+        var outputFile = Path.GetTempFileName() + GetFileExtension(_format);
         try
         {
-            await File.WriteAllTextAsync(inputFile, mermaidSource, cancellationToken).ConfigureAwait(false);
+            await File.WriteAllTextAsync(inputFile, effectiveSource, cancellationToken).ConfigureAwait(false);
 
             var psi = new System.Diagnostics.ProcessStartInfo(_mmdc,
                 $"-i \"{inputFile}\" -o \"{outputFile}\" -b transparent")
@@ -36,7 +43,12 @@ public sealed class MermaidCliRenderer : IMermaidRenderer
             await proc.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
 
             if (proc.ExitCode != 0 || !File.Exists(outputFile)) return null;
-            return await File.ReadAllBytesAsync(outputFile, cancellationToken).ConfigureAwait(false);
+            var content = await File.ReadAllBytesAsync(outputFile, cancellationToken).ConfigureAwait(false);
+            DumpDebugSvg(content);
+            var size = _format == MermaidRenderFormat.Svg
+                ? MermaidSvgSizeParser.Parse(content)
+                : MermaidRenderSize.Empty;
+            return new MermaidRenderAsset(_format, content, size);
         }
         catch
         {
@@ -46,6 +58,43 @@ public sealed class MermaidCliRenderer : IMermaidRenderer
         {
             if (File.Exists(inputFile)) File.Delete(inputFile);
             if (File.Exists(outputFile)) File.Delete(outputFile);
+        }
+
+    }
+
+    private static string GetFileExtension(MermaidRenderFormat format)
+    {
+        return format switch
+        {
+            MermaidRenderFormat.Svg => ".svg",
+            _ => ".png",
+        };
+    }
+
+    private static string EnsureSvgCompatibleSource(string mermaidSource)
+    {
+        if (mermaidSource.Contains("htmlLabels", StringComparison.Ordinal))
+            return mermaidSource;
+
+        const string init = "%%{init: {\"flowchart\": {\"htmlLabels\": false}} }%%";
+        return $"{init}{Environment.NewLine}{mermaidSource}";
+    }
+
+    private static void DumpDebugSvg(byte[] content)
+    {
+        if (content.Length == 0)
+            return;
+
+        string? path = Environment.GetEnvironmentVariable("DECKMARK_DEBUG_MERMAID_SVG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            File.WriteAllBytes(path, content);
+        }
+        catch
+        {
         }
     }
 }

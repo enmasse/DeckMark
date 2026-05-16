@@ -1,3 +1,4 @@
+using DeckMark.Core.Mermaid;
 using DeckMark.Core.Model;
 using SkiaSharp;
 
@@ -28,11 +29,11 @@ internal sealed class SlideRenderer
     private readonly SKTypeface _regular;
     private readonly SKTypeface _bold;
     private readonly SKTypeface _mono;
-    private readonly IReadOnlyDictionary<string, SKImage?> _diagrams;
+    private readonly IReadOnlyDictionary<string, MermaidRenderAsset?> _diagrams;
 
-    public SlideRenderer(IReadOnlyDictionary<string, SKImage?>? diagrams = null)
+    public SlideRenderer(IReadOnlyDictionary<string, MermaidRenderAsset?>? diagrams = null)
     {
-        _diagrams = diagrams ?? new Dictionary<string, SKImage?>();
+        _diagrams = diagrams ?? Array.Empty<KeyValuePair<string, MermaidRenderAsset?>>().ToDictionary(static pair => pair.Key, static pair => pair.Value);
         _regular = SKTypeface.FromFamilyName("Segoe UI",    SKFontStyle.Normal) ??
                    SKTypeface.FromFamilyName("DejaVu Sans", SKFontStyle.Normal) ??
                    SKTypeface.Default;
@@ -47,23 +48,44 @@ internal sealed class SlideRenderer
 
     public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount)
     {
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true);
+    }
+
+    public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid)
+    {
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid, collector: null);
+    }
+
+    private void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid, List<MermaidOverlayLayout>? collector)
+    {
         canvas.Clear(Background);
 
         bool isTitle = slide.Layout is "title" or "section";
 
         if (isTitle)
-            DrawTitleLayout(canvas, slide, header);
+            DrawTitleLayout(canvas, slide, header, includeMermaid, collector);
         else if (slide.Layout == "two-column")
-            DrawTwoColumnLayout(canvas, slide);
+            DrawTwoColumnLayout(canvas, slide, includeMermaid, collector);
         else
-            DrawContentLayout(canvas, slide);
+            DrawContentLayout(canvas, slide, includeMermaid, collector);
 
         DrawFooter(canvas, slide, header, slideIndex, slideCount);
     }
 
+    public IReadOnlyList<MermaidOverlayLayout> GetMermaidLayouts(Slide slide, DeckHeader header, int slideIndex, int slideCount)
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(1, 1));
+        if (surface is null)
+            return [];
+
+        var collector = new List<MermaidOverlayLayout>();
+        Draw(surface.Canvas, slide, header, slideIndex, slideCount, includeMermaid: false, collector: collector);
+        return collector;
+    }
+
     // ── Layouts ──────────────────────────────────────────────────────────────
 
-    private void DrawTitleLayout(SKCanvas canvas, Slide slide, DeckHeader header)
+    private void DrawTitleLayout(SKCanvas canvas, Slide slide, DeckHeader header, bool includeMermaid, List<MermaidOverlayLayout>? collector = null)
     {
         bool hasBody = slide.Body.Count > 0;
 
@@ -79,10 +101,10 @@ internal sealed class SlideRenderer
 
         float bodyY = cy + 90f;
         foreach (var block in slide.Body)
-            bodyY = DrawBlock(canvas, block, 80f, bodyY, SlideWidth - 160f);
+            bodyY = DrawBlock(canvas, block, 80f, bodyY, SlideWidth - 160f, includeMermaid, collector);
     }
 
-    private void DrawContentLayout(SKCanvas canvas, Slide slide)
+    private void DrawContentLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? collector = null)
     {
         float y = 60f;
         DrawText(canvas, slide.Title, 80f, y, _bold, 48f, Accent, SKTextAlign.Left);
@@ -90,10 +112,10 @@ internal sealed class SlideRenderer
         y += 90f;
 
         foreach (var block in slide.Body)
-            y = DrawBlock(canvas, block, 80f, y, SlideWidth - 160f);
+            y = DrawBlock(canvas, block, 80f, y, SlideWidth - 160f, includeMermaid, collector);
     }
 
-    private void DrawTwoColumnLayout(SKCanvas canvas, Slide slide)
+    private void DrawTwoColumnLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? collector = null)
     {
         float y = 60f;
         DrawText(canvas, slide.Title, 80f, y, _bold, 48f, Accent, SKTextAlign.Left);
@@ -111,20 +133,20 @@ internal sealed class SlideRenderer
                 float leftY  = y;
                 float rightY = y;
                 foreach (var b in block.Left)
-                    leftY = DrawBlock(canvas, b, leftX, leftY, colWidth);
+                    leftY = DrawBlock(canvas, b, leftX, leftY, colWidth, includeMermaid, collector);
                 foreach (var b in block.Right)
-                    rightY = DrawBlock(canvas, b, rightX, rightY, colWidth);
+                    rightY = DrawBlock(canvas, b, rightX, rightY, colWidth, includeMermaid, collector);
             }
             else
             {
-                y = DrawBlock(canvas, block, leftX, y, SlideWidth - 160f);
+                y = DrawBlock(canvas, block, leftX, y, SlideWidth - 160f, includeMermaid, collector);
             }
         }
     }
 
     // ── Block dispatcher ─────────────────────────────────────────────────────
 
-    private float DrawBlock(SKCanvas canvas, ContentBlock block, float x, float y, float width)
+    private float DrawBlock(SKCanvas canvas, ContentBlock block, float x, float y, float width, bool includeMermaid, List<MermaidOverlayLayout>? collector)
     {
         return block.Kind switch
         {
@@ -135,7 +157,7 @@ internal sealed class SlideRenderer
             BlockKind.BlockQuote   => DrawBlockQuote(canvas, block, x, y, width),
             BlockKind.Callout      => DrawCallout(canvas, block, x, y, width),
             BlockKind.Paragraph    => DrawParagraph(canvas, block.RawContent, x, y, width),
-            BlockKind.MermaidBlock => DrawMermaidPlaceholder(canvas, block.RawContent, x, y, width),
+            BlockKind.MermaidBlock => DrawMermaidPlaceholder(canvas, block.RawContent, x, y, width, includeMermaid, collector),
             _                      => y + 16f,
         };
     }
@@ -226,16 +248,25 @@ internal sealed class SlideRenderer
         return bottom + 12f;
     }
 
-    private float DrawMermaidPlaceholder(SKCanvas canvas, string source, float x, float y, float width)
+    private float DrawMermaidPlaceholder(SKCanvas canvas, string source, float x, float y, float width, bool includeMermaid, List<MermaidOverlayLayout>? collector)
     {
-        if (_diagrams.TryGetValue(source, out var img) && img is not null)
+        if (_diagrams.TryGetValue(source, out var asset) && asset is { Format: MermaidRenderFormat.Png })
         {
+            using var img = SKImage.FromEncodedData(asset.Content);
+            if (img is null)
+                return y + 16f;
+
             float footerTop = SlideHeight - 38f;
             float maxH  = footerTop - y - 16f;
-            float scale = Math.Min(width / img.Width, maxH / img.Height);
+            float scale = Math.Min(1f, Math.Min(width / img.Width, maxH / img.Height));
             float dw    = img.Width  * scale;
             float dh    = img.Height * scale;
             float dx    = x + (width - dw) / 2f;
+
+            collector?.Add(new MermaidOverlayLayout(source, new SKRect(dx, y, dx + dw, y + dh)));
+
+            if (!includeMermaid)
+                return y + dh + 16f;
 
             using var paint = new SKPaint { IsAntialias = true };
             canvas.DrawImage(
@@ -252,6 +283,13 @@ internal sealed class SlideRenderer
         DrawText(canvas, "[ diagram ]", x + width / 2f, y + boxH / 2f + 8f,
                  _regular, 18f, TextMuted, SKTextAlign.Center);
         return y + boxH + 16f;
+    }
+
+    private void DrawMermaidFallback(SKCanvas canvas, SKRect rect)
+    {
+        using var bgPaint = new SKPaint { Color = Surface, IsAntialias = true };
+        canvas.DrawRoundRect(new SKRoundRect(rect, 6f), bgPaint);
+        DrawText(canvas, "[ diagram ]", rect.MidX, rect.MidY + 8f, _regular, 18f, TextMuted, SKTextAlign.Center);
     }
 
     // ── Footer ───────────────────────────────────────────────────────────────
@@ -357,4 +395,6 @@ internal sealed class SlideRenderer
         text = System.Text.RegularExpressions.Regex.Replace(text, @"__(.+?)__",     "$1");
         return text;
     }
+
+    public readonly record struct MermaidOverlayLayout(string Source, SKRect Bounds);
 }

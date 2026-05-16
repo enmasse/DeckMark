@@ -756,10 +756,11 @@ public sealed class PptxConverter
         SlidePart slidePart,
         CancellationToken ct)
     {
-        var pngBytes = await _mermaid.RenderAsync(block.RawContent, ct).ConfigureAwait(false);
+        var mermaidAsset = await _mermaid.RenderAsync(block.RawContent, ct).ConfigureAwait(false);
 
-        if (pngBytes is not null)
+        if (mermaidAsset is { Format: MermaidRenderFormat.Png } && mermaidAsset.Content.Length > 0)
         {
+            var pngBytes = mermaidAsset.Content;
             // Compute fillRect offsets so the image is letterboxed/pillarboxed
             // within the allocated box without distorting its aspect ratio.
             var (imgW, imgH) = ReadPngDimensions(pngBytes);

@@ -5,6 +5,6 @@ namespace DeckMark.Core.Mermaid;
 /// </summary>
 public sealed class MermaidPlaceholderRenderer : IMermaidRenderer
 {
-    public Task<byte[]?> RenderAsync(string mermaidSource, CancellationToken cancellationToken = default)
-        => Task.FromResult<byte[]?>(null);
+    public Task<MermaidRenderAsset?> RenderAsync(string mermaidSource, CancellationToken cancellationToken = default)
+        => Task.FromResult<MermaidRenderAsset?>(null);
 }

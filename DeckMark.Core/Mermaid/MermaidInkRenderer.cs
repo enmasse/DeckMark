@@ -7,26 +7,77 @@ namespace DeckMark.Core.Mermaid;
 public sealed class MermaidInkRenderer : IMermaidRenderer
 {
     private static readonly HttpClient Http = new();
-    private const string BaseUrl = "https://mermaid.ink/img/";
+    private readonly MermaidRenderFormat _format;
 
-    public async Task<byte[]?> RenderAsync(string mermaidSource, CancellationToken cancellationToken = default)
+    public MermaidInkRenderer(MermaidRenderFormat format = MermaidRenderFormat.Png)
+    {
+        _format = format;
+    }
+
+    public async Task<MermaidRenderAsset?> RenderAsync(string mermaidSource, CancellationToken cancellationToken = default)
     {
         try
         {
+            string effectiveSource = _format == MermaidRenderFormat.Svg
+                ? EnsureSvgCompatibleSource(mermaidSource)
+                : mermaidSource;
+
             // mermaid.ink requires URL-safe Base64 (no +, /, or = padding)
-            var bytes = System.Text.Encoding.UTF8.GetBytes(mermaidSource);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(effectiveSource);
             var encoded = Convert.ToBase64String(bytes)
                 .Replace('+', '-')
                 .Replace('/', '_')
                 .TrimEnd('=');
-            var url = BaseUrl + encoded;
+            var url = GetBaseUrl(_format) + encoded;
             var response = await Http.GetAsync(url, cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            var content = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            DumpDebugSvg(content);
+            var size = _format == MermaidRenderFormat.Svg
+                ? MermaidSvgSizeParser.Parse(content)
+                : MermaidRenderSize.Empty;
+            return new MermaidRenderAsset(_format, content, size);
         }
         catch
         {
             return null;
+        }
+
+    }
+
+    private static string GetBaseUrl(MermaidRenderFormat format)
+    {
+        return format switch
+        {
+            MermaidRenderFormat.Svg => "https://mermaid.ink/svg/",
+            _ => "https://mermaid.ink/img/",
+        };
+    }
+
+    private static string EnsureSvgCompatibleSource(string mermaidSource)
+    {
+        if (mermaidSource.Contains("htmlLabels", StringComparison.Ordinal))
+            return mermaidSource;
+
+        const string init = "%%{init: {\"flowchart\": {\"htmlLabels\": false}} }%%";
+        return $"{init}{Environment.NewLine}{mermaidSource}";
+    }
+
+    private static void DumpDebugSvg(byte[] content)
+    {
+        if (content.Length == 0)
+            return;
+
+        string? path = Environment.GetEnvironmentVariable("DECKMARK_DEBUG_MERMAID_SVG");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            File.WriteAllBytes(path, content);
+        }
+        catch
+        {
         }
     }
 }
