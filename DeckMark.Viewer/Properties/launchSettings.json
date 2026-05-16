@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "DeckMark.Viewer": {
+      "commandName": "Project",
+      "commandLineArgs": "D:\\source\\DeckMark\\DeckMark\\AgenticTerminal-presentation.deck.md"
+    }
+  }
+}

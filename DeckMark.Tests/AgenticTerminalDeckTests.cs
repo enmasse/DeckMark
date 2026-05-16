@@ -64,6 +64,22 @@ public class AgenticTerminalDeckTests : IDisposable
     }
 
     [Fact]
+    public void Parse_AgenticTerminalDeck_FirstSlideHasFadeTransition()
+    {
+        var source = File.ReadAllText(DeckPath);
+        var doc = DeckMarkParser.Parse(source);
+        Assert.Equal("fade", doc.Slides[0].Transition);
+    }
+
+    [Fact]
+    public void Parse_AgenticTerminalDeck_SecondSlideHasNoExplicitTransition()
+    {
+        var source = File.ReadAllText(DeckPath);
+        var doc = DeckMarkParser.Parse(source);
+        Assert.Null(doc.Slides[1].Transition);
+    }
+
+    [Fact]
     public void Parse_AgenticTerminalDeck_NotesBlockIsNotInSlideBody()
     {
         var source = File.ReadAllText(DeckPath);
@@ -121,6 +137,15 @@ public class AgenticTerminalDeckTests : IDisposable
         using var prs = PresentationDocument.Open(path, false);
         var firstSlideXml = prs.PresentationPart!.SlideParts.First().Slide.OuterXml;
         Assert.Contains("AgenticTerminal", firstSlideXml);
+    }
+
+    [Fact]
+    public void Convert_AgenticTerminalDeck_SecondSlideInheritsFadeTransition()
+    {
+        var path = ConvertDeckToFile();
+        using var prs = PresentationDocument.Open(path, false);
+        var slides = prs.PresentationPart!.SlideParts.ToList();
+        Assert.Contains("<p:fade", slides[1].Slide.OuterXml, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

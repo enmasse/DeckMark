@@ -13,7 +13,7 @@ language: en-US
 # AgenticTerminal
 @id: title
 @layout: title
-@transition: fade
+@transition: random
 
 A terminal-first AI experience for developers who live in the shell.
 

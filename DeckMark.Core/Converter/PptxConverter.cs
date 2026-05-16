@@ -62,10 +62,14 @@ public sealed class PptxConverter
         uint slideId = 256;
         var slideIdList = new P.SlideIdList();
         var slides = SplitOverflowSlides(doc.Slides);
+        string? currentTransition = null;
         foreach (var slide in slides)
         {
+            if (!string.IsNullOrWhiteSpace(slide.Transition))
+                currentTransition = slide.Transition;
+
             var slidePart = presPart.AddNewPart<SlidePart>();
-            slidePart.Slide = await BuildSlideAsync(slide, slidePart, cancellationToken);
+            slidePart.Slide = await BuildSlideAsync(slide, currentTransition, slidePart, cancellationToken);
             slidePart.AddPart(slideLayoutPart);
 
             if (slide.Notes.Count > 0)
@@ -332,6 +336,7 @@ public sealed class PptxConverter
 
     private async Task<PSlide> BuildSlideAsync(
         Model.Slide slide,
+        string? effectiveTransition,
         SlidePart slidePart,
         CancellationToken ct)
     {
@@ -391,8 +396,39 @@ public sealed class PptxConverter
         pSlide.AddNamespaceDeclaration("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
         pSlide.AddNamespaceDeclaration("p", "http://schemas.openxmlformats.org/presentationml/2006/main");
         pSlide.Append(csd);
+        if (CreateTransition(effectiveTransition) is P.Transition transition)
+            pSlide.Append(transition);
         pSlide.Append(new P.ColorMapOverride(new A.MasterColorMapping()));
         return pSlide;
+    }
+
+    private static P.Transition? CreateTransition(string? transition)
+    {
+        return transition?.Trim().ToLowerInvariant() switch
+        {
+            "blinds" => new P.Transition(new P.BlindsTransition()),
+            "checker" => new P.Transition(new P.CheckerTransition()),
+            "circle" => new P.Transition(new P.CircleTransition()),
+            "comb" => new P.Transition(new P.CombTransition()),
+            "cover" => new P.Transition(new P.CoverTransition()),
+            "cut" => new P.Transition(new P.CutTransition()),
+            "diamond" => new P.Transition(new P.DiamondTransition()),
+            "dissolve" => new P.Transition(new P.DissolveTransition()),
+            "fade" => new P.Transition(new P.FadeTransition()),
+            "newsflash" => new P.Transition(new P.NewsflashTransition()),
+            "plus" => new P.Transition(new P.PlusTransition()),
+            "pull" => new P.Transition(new P.PullTransition()),
+            "push" => new P.Transition(new P.PushTransition()),
+            "random" => new P.Transition(new P.RandomTransition()),
+            "randombar" => new P.Transition(new P.RandomBarTransition()),
+            "split" => new P.Transition(new P.SplitTransition()),
+            "strips" => new P.Transition(new P.StripsTransition()),
+            "wedge" => new P.Transition(new P.WedgeTransition()),
+            "wheel" => new P.Transition(new P.WheelTransition()),
+            "wipe" => new P.Transition(new P.WipeTransition()),
+            "zoom" => new P.Transition(new P.ZoomTransition()),
+            _ => null,
+        };
     }
 
     // ── Column layout helper (scale-to-fit) ──────────────────────────────────

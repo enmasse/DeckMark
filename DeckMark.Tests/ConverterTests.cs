@@ -209,4 +209,77 @@ public class ConverterTests : IDisposable
         var xml = prs.PresentationPart!.SlideParts.First().Slide.OuterXml;
         Assert.Contains("This is important.", xml);
     }
+
+    [Fact]
+    public void Convert_ExplicitFadeTransition_AppearsInSlideXml()
+    {
+        var path = ConvertToFile("""
+            :::deck
+            title: Test
+            :::
+
+            ---
+            # One
+            @transition: fade
+            """);
+
+        using var prs = PresentationDocument.Open(path, false);
+        var xml = prs.PresentationPart!.SlideParts.First().Slide.OuterXml;
+        Assert.Contains("<p:transition", xml, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("<p:fade", xml, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Convert_Transition_IsInheritedWhenNextSlideHasNoHint()
+    {
+        var path = ConvertToFile("""
+            :::deck
+            title: Test
+            :::
+
+            ---
+            # One
+            @transition: fade
+
+            ---
+            # Two
+            """);
+
+        using var prs = PresentationDocument.Open(path, false);
+        var slides = prs.PresentationPart!.SlideParts.ToList();
+
+        Assert.Contains("<p:fade", slides[0].Slide.OuterXml, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("<p:fade", slides[1].Slide.OuterXml, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("blinds", "<p:blinds")]
+    [InlineData("checker", "<p:checker")]
+    [InlineData("circle", "<p:circle")]
+    [InlineData("cover", "<p:cover")]
+    [InlineData("dissolve", "<p:dissolve")]
+    [InlineData("pull", "<p:pull")]
+    [InlineData("push", "<p:push")]
+    [InlineData("randombar", "<p:randomBar")]
+    [InlineData("split", "<p:split")]
+    [InlineData("wheel", "<p:wheel")]
+    [InlineData("wipe", "<p:wipe")]
+    [InlineData("zoom", "<p:zoom")]
+    public void Convert_SupportedTransitions_AppearInSlideXml(string transition, string expectedElement)
+    {
+        var path = ConvertToFile($$"""
+            :::deck
+            title: Test
+            :::
+
+            ---
+            # One
+            @transition: {{transition}}
+            """);
+
+        using var prs = PresentationDocument.Open(path, false);
+        var xml = prs.PresentationPart!.SlideParts.First().Slide.OuterXml;
+        Assert.Contains("<p:transition", xml, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(expectedElement, xml, StringComparison.OrdinalIgnoreCase);
+    }
 }

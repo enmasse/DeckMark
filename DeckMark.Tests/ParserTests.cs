@@ -131,6 +131,22 @@ public class ParserTests
         Assert.Equal("My Footer", doc.Slides[0].Footer);
     }
 
+    [Fact]
+    public void Parse_SlideDirectives_UnknownTransitionIsPreserved()
+    {
+        var doc = Parse("""
+            :::deck
+            title: X
+            :::
+
+            ---
+            # Slide
+            @transition: dissolve
+            """);
+
+        Assert.Equal("dissolve", doc.Slides[0].Transition);
+    }
+
     // ── Body content ─────────────────────────────────────────────────────────
 
     [Fact]
