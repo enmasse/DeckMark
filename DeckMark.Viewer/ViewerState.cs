@@ -62,6 +62,11 @@ internal sealed class ViewerState
     public float Zoom { get; private set; } = 1.0f;
     public SKPoint Pan { get; private set; } = SKPoint.Empty;
     public bool FillMode { get; private set; }
+    public bool ShowLayoutDebugOverlay { get; private set; }
+    public int? FocusedMermaidIndex { get; private set; }
+    public int? MermaidAnimationFromIndex { get; private set; }
+    public int? MermaidAnimationToIndex { get; private set; }
+    public DateTimeOffset? MermaidAnimationStartedAt { get; private set; }
 
     public bool Dirty { get; set; } = true;
 
@@ -69,6 +74,7 @@ internal sealed class ViewerState
     private const float ZoomMin = 0.25f;
     private const float ZoomMax = 4.0f;
     private static readonly TimeSpan TransitionDuration = TimeSpan.FromMilliseconds(350);
+    private static readonly TimeSpan MermaidAnimationDuration = TimeSpan.FromMilliseconds(280);
 
     public bool Next()
     {
@@ -119,10 +125,105 @@ internal sealed class ViewerState
         Dirty = true;
     }
 
+    public void ToggleLayoutDebugOverlay()
+    {
+        ShowLayoutDebugOverlay = !ShowLayoutDebugOverlay;
+        Dirty = true;
+    }
+
     public void ApplyPan(float dx, float dy)
     {
         Pan = new SKPoint(Pan.X + dx, Pan.Y + dy);
         Dirty = true;
+    }
+
+    public bool AdvanceMermaidFocus(int mermaidCount)
+    {
+        if (mermaidCount <= 0)
+            return false;
+
+        if (FocusedMermaidIndex is null)
+        {
+            BeginMermaidAnimation(null, 0);
+            FocusedMermaidIndex = 0;
+            Dirty = true;
+            return true;
+        }
+
+        if (FocusedMermaidIndex.Value < mermaidCount - 1)
+        {
+            BeginMermaidAnimation(FocusedMermaidIndex, FocusedMermaidIndex + 1);
+            FocusedMermaidIndex++;
+            Dirty = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool RetreatMermaidFocus()
+    {
+        if (FocusedMermaidIndex is null)
+            return false;
+
+        var previousIndex = FocusedMermaidIndex;
+        if (FocusedMermaidIndex.Value > 0)
+        {
+            FocusedMermaidIndex--;
+            BeginMermaidAnimation(previousIndex, FocusedMermaidIndex);
+        }
+        else
+        {
+            FocusedMermaidIndex = null;
+            BeginMermaidAnimation(previousIndex, null);
+        }
+
+        Dirty = true;
+        return true;
+    }
+
+    public void FocusLastMermaid(int mermaidCount)
+    {
+        if (mermaidCount <= 0)
+        {
+            ResetMermaidFocus();
+            return;
+        }
+
+        BeginMermaidAnimation(null, mermaidCount - 1);
+        FocusedMermaidIndex = mermaidCount - 1;
+        Dirty = true;
+    }
+
+    public void ResetMermaidFocus()
+    {
+        if (FocusedMermaidIndex is null)
+            return;
+
+        BeginMermaidAnimation(FocusedMermaidIndex, null);
+        FocusedMermaidIndex = null;
+        Dirty = true;
+    }
+
+    public bool IsMermaidAnimationActive(DateTimeOffset now)
+    {
+        if (MermaidAnimationStartedAt is null || MermaidAnimationToIndex == MermaidAnimationFromIndex)
+            return false;
+
+        if (now - MermaidAnimationStartedAt.Value < MermaidAnimationDuration)
+            return true;
+
+        EndMermaidAnimation();
+        return false;
+    }
+
+    public float GetMermaidAnimationProgress(DateTimeOffset now)
+    {
+        if (!IsMermaidAnimationActive(now) || MermaidAnimationStartedAt is null)
+            return 1f;
+
+        var elapsed = now - MermaidAnimationStartedAt.Value;
+        return (float)Math.Clamp(elapsed.TotalMilliseconds / MermaidAnimationDuration.TotalMilliseconds, 0.0, 1.0);
     }
 
     public void BeginTransition(int fromSlideIndex, string? transition)
@@ -167,6 +268,20 @@ internal sealed class ViewerState
         TransitionFromSlideIndex = null;
         TransitionKind = SlideTransitionKind.None;
         TransitionStartedAt = null;
+    }
+
+    private void BeginMermaidAnimation(int? fromIndex, int? toIndex)
+    {
+        MermaidAnimationFromIndex = fromIndex;
+        MermaidAnimationToIndex = toIndex;
+        MermaidAnimationStartedAt = DateTimeOffset.UtcNow;
+    }
+
+    private void EndMermaidAnimation()
+    {
+        MermaidAnimationFromIndex = FocusedMermaidIndex;
+        MermaidAnimationToIndex = FocusedMermaidIndex;
+        MermaidAnimationStartedAt = null;
     }
 
     public float BaseScale(int windowWidth, int windowHeight, float slideWidth, float slideHeight)

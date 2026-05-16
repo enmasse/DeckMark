@@ -38,6 +38,9 @@ var diagrams = new Dictionary<string, MermaidRenderAsset?>();
 foreach (var slide in deck.Slides)
     CollectMermaid(slide.Body);
 var renderer = new SlideRenderer(diagrams);
+var mermaidLayoutsBySlide = deck.Slides
+    .Select((slide, index) => renderer.GetMermaidLayouts(slide, deck.Header, index, deck.Slides.Count))
+    .ToArray();
 
 void CollectMermaid(IEnumerable<DeckMark.Core.Model.ContentBlock> blocks)
 {
@@ -167,8 +170,16 @@ void ConfigureWindow(WindowRenderState target, bool enableInput)
 
 void RefreshDirtyFrames()
 {
-    if (state.IsTransitionActive(DateTimeOffset.UtcNow))
+    var now = DateTimeOffset.UtcNow;
+    if (state.IsTransitionActive(now))
         state.Dirty = true;
+
+    if (state.IsMermaidAnimationActive(now))
+    {
+        presenterView.TransitionRenderer?.InvalidateTextures();
+        audienceView?.TransitionRenderer?.InvalidateTextures();
+        state.Dirty = true;
+    }
 
     if (!state.Dirty)
         return;
@@ -217,7 +228,51 @@ void RenderWindow(WindowRenderState target)
 void RenderSlide(SKCanvas canvas, int slideIndex)
 {
     var slide = deck.Slides[slideIndex];
-    renderer.Draw(canvas, slide, deck.Header, slideIndex, deck.Slides.Count, includeMermaid: true);
+    var mermaidFocus = CreateMermaidFocusRenderState(slideIndex);
+    if (mermaidFocus is null)
+        renderer.Draw(canvas, slide, deck.Header, slideIndex, deck.Slides.Count, includeMermaid: true, showLayoutDebugOverlay: state.ShowLayoutDebugOverlay);
+    else
+        renderer.Draw(canvas, slide, deck.Header, slideIndex, deck.Slides.Count, mermaidFocus, showLayoutDebugOverlay: state.ShowLayoutDebugOverlay);
+}
+
+SlideRenderer.MermaidFocusRenderState? CreateMermaidFocusRenderState(int slideIndex)
+{
+    if (slideIndex != state.SlideIndex)
+        return null;
+
+    var layouts = slideIndex >= 0 && slideIndex < mermaidLayoutsBySlide.Length
+        ? mermaidLayoutsBySlide[slideIndex]
+        : [];
+
+    if (layouts.Count == 0)
+        return null;
+
+    var now = DateTimeOffset.UtcNow;
+    bool isAnimating = state.IsMermaidAnimationActive(now);
+    if (!isAnimating)
+        return null;
+
+    float progress = state.GetMermaidAnimationProgress(now);
+
+    var fromFrame = CreateMermaidFocusFrame(layouts, state.MermaidAnimationFromIndex, 1f - progress);
+    var toFrame = CreateMermaidFocusFrame(
+        layouts,
+        state.MermaidAnimationToIndex,
+        progress);
+
+    if (fromFrame is null && toFrame is null)
+        return null;
+
+    return new SlideRenderer.MermaidFocusRenderState(fromFrame, toFrame, progress);
+}
+
+static SlideRenderer.MermaidFocusFrame? CreateMermaidFocusFrame(IReadOnlyList<SlideRenderer.MermaidOverlayLayout> layouts, int? index, float progress)
+{
+    if (index is null || index < 0 || index >= layouts.Count)
+        return null;
+
+    var layout = layouts[index.Value];
+    return new SlideRenderer.MermaidFocusFrame(layout.Source, layout.Bounds, progress);
 }
 
 static void PrintNotes(Slide slide, int index, int total)
@@ -270,18 +325,36 @@ bool TryCreateCommand(ConsoleKeyInfo keyInfo, out Action action)
     {
         ConsoleKey.Spacebar or ConsoleKey.RightArrow or ConsoleKey.DownArrow or ConsoleKey.N => () =>
         {
+            if (state.AdvanceMermaidFocus(GetMermaidCount(state.SlideIndex)))
+            {
+                presenterView.TransitionRenderer?.InvalidateTextures();
+                audienceView?.TransitionRenderer?.InvalidateTextures();
+                return;
+            }
+
             int previousSlideIndex = state.SlideIndex;
             if (state.Next())
             {
+                state.ResetMermaidFocus();
                 state.BeginTransition(previousSlideIndex, ResolveTransition(previousSlideIndex));
                 OnSlideChanged();
             }
         },
         ConsoleKey.Backspace or ConsoleKey.LeftArrow or ConsoleKey.UpArrow or ConsoleKey.P => () =>
         {
+            if (state.RetreatMermaidFocus())
+            {
+                presenterView.TransitionRenderer?.InvalidateTextures();
+                audienceView?.TransitionRenderer?.InvalidateTextures();
+                return;
+            }
+
             int previousSlideIndex = state.SlideIndex;
             if (state.Previous())
             {
+                state.FocusLastMermaid(GetMermaidCount(state.SlideIndex));
+                presenterView.TransitionRenderer?.InvalidateTextures();
+                audienceView?.TransitionRenderer?.InvalidateTextures();
                 state.BeginTransition(previousSlideIndex, ResolveTransition(previousSlideIndex));
                 OnSlideChanged();
             }
@@ -289,6 +362,12 @@ bool TryCreateCommand(ConsoleKeyInfo keyInfo, out Action action)
         ConsoleKey.OemPlus or ConsoleKey.Add => () => state.ZoomIn(),
         ConsoleKey.OemMinus or ConsoleKey.Subtract => () => state.ZoomOut(),
         ConsoleKey.D0 or ConsoleKey.NumPad0 => () => state.ResetZoom(),
+        ConsoleKey.D => () =>
+        {
+            state.ToggleLayoutDebugOverlay();
+            presenterView.TransitionRenderer?.InvalidateTextures();
+            audienceView?.TransitionRenderer?.InvalidateTextures();
+        },
         ConsoleKey.F => () => state.ToggleFill(),
         ConsoleKey.F11 or ConsoleKey.M => () => TogglePresentationMode(),
         ConsoleKey.Escape or ConsoleKey.W => () => ExitPresentationMode(),
@@ -320,6 +399,14 @@ string? ResolveTransition(int slideIndex)
 void OnSlideChanged()
 {
     PrintNotes(deck.Slides[state.SlideIndex], state.SlideIndex, deck.Slides.Count);
+}
+
+int GetMermaidCount(int slideIndex)
+{
+    if (slideIndex < 0 || slideIndex >= mermaidLayoutsBySlide.Length)
+        return 0;
+
+    return mermaidLayoutsBySlide[slideIndex].Count;
 }
 
 void TogglePresentationMode()
@@ -376,7 +463,7 @@ void ExitPresentationMode()
 
 static void PrintCommandHelp()
 {
-    Console.WriteLine("Terminal keys: Space/Right/Down/N next, Backspace/Left/Up/P previous, +/- zoom, 0 reset, F fill, F11/M present, Esc/W windowed, S notes, H/? help, Q quit");
+    Console.WriteLine("Terminal keys: Space/Right/Down/N next, Backspace/Left/Up/P previous, +/- zoom, 0 reset, D debug overlay, F fill, F11/M present, Esc/W windowed, S notes, H/? help, Q quit");
 }
 
 sealed class WindowRenderState : IDisposable

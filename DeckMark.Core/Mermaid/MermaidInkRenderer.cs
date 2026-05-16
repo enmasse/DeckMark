@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace DeckMark.Core.Mermaid;
 
 /// <summary>
@@ -18,9 +20,7 @@ public sealed class MermaidInkRenderer : IMermaidRenderer
     {
         try
         {
-            string effectiveSource = _format == MermaidRenderFormat.Svg
-                ? EnsureSvgCompatibleSource(mermaidSource)
-                : mermaidSource;
+            string effectiveSource = EnsureRenderCompatibleSource(mermaidSource, _format);
 
             // mermaid.ink requires URL-safe Base64 (no +, /, or = padding)
             var bytes = System.Text.Encoding.UTF8.GetBytes(effectiveSource);
@@ -54,12 +54,18 @@ public sealed class MermaidInkRenderer : IMermaidRenderer
         };
     }
 
-    private static string EnsureSvgCompatibleSource(string mermaidSource)
+    private static string EnsureRenderCompatibleSource(string mermaidSource, MermaidRenderFormat format)
     {
-        if (mermaidSource.Contains("htmlLabels", StringComparison.Ordinal))
+        if (mermaidSource.Contains("%%{init:", StringComparison.Ordinal) ||
+            mermaidSource.Contains("%%{initialize:", StringComparison.Ordinal))
             return mermaidSource;
 
-        const string init = "%%{init: {\"flowchart\": {\"htmlLabels\": false}} }%%";
+        const string themeCss = ".node rect, .node circle, .node ellipse, .node polygon, .node path, .cluster rect, .cluster polygon, .label-container { filter: none !important; }";
+        object config = format == MermaidRenderFormat.Svg
+            ? new { flowchart = new { htmlLabels = false }, themeCSS = themeCss }
+            : new { themeCSS = themeCss };
+        string configJson = JsonSerializer.Serialize(config);
+        string init = $"%%{{init: {configJson} }}%%";
         return $"{init}{Environment.NewLine}{mermaidSource}";
     }
 

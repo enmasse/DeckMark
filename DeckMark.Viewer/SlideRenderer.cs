@@ -13,6 +13,8 @@ internal sealed class SlideRenderer
     // Logical slide dimensions (16:9)
     public const float SlideWidth = 1280f;
     public const float SlideHeight = 720f;
+    private const float InlineMermaidGap = 16f;
+    private const float InlineMermaidMinScale = 0.20f;
 
     // Theme colours
     private static readonly SKColor Background  = new(0x1E, 0x1E, 0x2E);
@@ -30,6 +32,9 @@ internal sealed class SlideRenderer
     private readonly SKTypeface _bold;
     private readonly SKTypeface _mono;
     private readonly IReadOnlyDictionary<string, MermaidRenderAsset?> _diagrams;
+    private List<SKRect>? _occupiedBodyRects;
+    private List<LayoutDebugRect>? _layoutDebugRects;
+    private int _currentSlideIndex;
 
     public SlideRenderer(IReadOnlyDictionary<string, MermaidRenderAsset?>? diagrams = null)
     {
@@ -48,28 +53,59 @@ internal sealed class SlideRenderer
 
     public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount)
     {
-        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true);
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, showLayoutDebugOverlay: false);
     }
 
     public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid)
     {
-        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid, collector: null);
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid, collector: null, mermaidFocus: null, showLayoutDebugOverlay: false);
     }
 
-    private void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid, List<MermaidOverlayLayout>? collector)
+    public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid, bool showLayoutDebugOverlay)
+    {
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid, collector: null, mermaidFocus: null, showLayoutDebugOverlay: showLayoutDebugOverlay);
+    }
+
+    public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, MermaidFocusRenderState mermaidFocus)
+    {
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, collector: null, mermaidFocus: mermaidFocus, showLayoutDebugOverlay: false);
+    }
+
+    public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, MermaidFocusRenderState mermaidFocus, bool showLayoutDebugOverlay)
+    {
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, collector: null, mermaidFocus: mermaidFocus, showLayoutDebugOverlay: showLayoutDebugOverlay);
+    }
+
+    private void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid, List<MermaidOverlayLayout>? collector, MermaidFocusRenderState? mermaidFocus, bool showLayoutDebugOverlay)
     {
         canvas.Clear(Background);
+
+        var previousOccupiedBodyRects = _occupiedBodyRects;
+        var previousLayoutDebugRects = _layoutDebugRects;
+        int previousSlideIndex = _currentSlideIndex;
+        _currentSlideIndex = slideIndex;
+        _occupiedBodyRects = collector is null ? [] : null;
+        _layoutDebugRects = showLayoutDebugOverlay && collector is null ? [] : null;
 
         bool isTitle = slide.Layout is "title" or "section";
 
         if (isTitle)
-            DrawTitleLayout(canvas, slide, header, includeMermaid, collector);
+            DrawTitleLayout(canvas, slide, header, includeMermaid, collector, mermaidFocus);
         else if (slide.Layout == "two-column")
-            DrawTwoColumnLayout(canvas, slide, includeMermaid, collector);
+            DrawTwoColumnLayout(canvas, slide, includeMermaid, collector, mermaidFocus);
         else
-            DrawContentLayout(canvas, slide, includeMermaid, collector);
+            DrawContentLayout(canvas, slide, includeMermaid, collector, mermaidFocus);
+
+        if (includeMermaid && collector is null)
+            DrawFocusedMermaidOverlay(canvas, mermaidFocus);
+
+        if (_layoutDebugRects is not null)
+            DrawLayoutDebugOverlay(canvas);
 
         DrawFooter(canvas, slide, header, slideIndex, slideCount);
+        _occupiedBodyRects = previousOccupiedBodyRects;
+        _layoutDebugRects = previousLayoutDebugRects;
+        _currentSlideIndex = previousSlideIndex;
     }
 
     public IReadOnlyList<MermaidOverlayLayout> GetMermaidLayouts(Slide slide, DeckHeader header, int slideIndex, int slideCount)
@@ -79,13 +115,13 @@ internal sealed class SlideRenderer
             return [];
 
         var collector = new List<MermaidOverlayLayout>();
-        Draw(surface.Canvas, slide, header, slideIndex, slideCount, includeMermaid: false, collector: collector);
+        Draw(surface.Canvas, slide, header, slideIndex, slideCount, false, collector, null, showLayoutDebugOverlay: false);
         return collector;
     }
 
     // ── Layouts ──────────────────────────────────────────────────────────────
 
-    private void DrawTitleLayout(SKCanvas canvas, Slide slide, DeckHeader header, bool includeMermaid, List<MermaidOverlayLayout>? collector = null)
+    private void DrawTitleLayout(SKCanvas canvas, Slide slide, DeckHeader header, bool includeMermaid, List<MermaidOverlayLayout>? collector = null, MermaidFocusRenderState? mermaidFocus = null)
     {
         bool hasBody = slide.Body.Count > 0;
 
@@ -101,10 +137,10 @@ internal sealed class SlideRenderer
 
         float bodyY = cy + 90f;
         foreach (var block in slide.Body)
-            bodyY = DrawBlock(canvas, block, 80f, bodyY, SlideWidth - 160f, includeMermaid, collector);
+            bodyY = DrawBlock(canvas, block, 80f, bodyY, SlideWidth - 160f, includeMermaid, collector, mermaidFocus);
     }
 
-    private void DrawContentLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? collector = null)
+    private void DrawContentLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? collector = null, MermaidFocusRenderState? mermaidFocus = null)
     {
         float y = 60f;
         DrawText(canvas, slide.Title, 80f, y, _bold, 48f, Accent, SKTextAlign.Left);
@@ -112,10 +148,10 @@ internal sealed class SlideRenderer
         y += 90f;
 
         foreach (var block in slide.Body)
-            y = DrawBlock(canvas, block, 80f, y, SlideWidth - 160f, includeMermaid, collector);
+            y = DrawBlock(canvas, block, 80f, y, SlideWidth - 160f, includeMermaid, collector, mermaidFocus);
     }
 
-    private void DrawTwoColumnLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? collector = null)
+    private void DrawTwoColumnLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? collector = null, MermaidFocusRenderState? mermaidFocus = null)
     {
         float y = 60f;
         DrawText(canvas, slide.Title, 80f, y, _bold, 48f, Accent, SKTextAlign.Left);
@@ -133,20 +169,20 @@ internal sealed class SlideRenderer
                 float leftY  = y;
                 float rightY = y;
                 foreach (var b in block.Left)
-                    leftY = DrawBlock(canvas, b, leftX, leftY, colWidth, includeMermaid, collector);
+                    leftY = DrawBlock(canvas, b, leftX, leftY, colWidth, includeMermaid, collector, mermaidFocus);
                 foreach (var b in block.Right)
-                    rightY = DrawBlock(canvas, b, rightX, rightY, colWidth, includeMermaid, collector);
+                    rightY = DrawBlock(canvas, b, rightX, rightY, colWidth, includeMermaid, collector, mermaidFocus);
             }
             else
             {
-                y = DrawBlock(canvas, block, leftX, y, SlideWidth - 160f, includeMermaid, collector);
+                y = DrawBlock(canvas, block, leftX, y, SlideWidth - 160f, includeMermaid, collector, mermaidFocus);
             }
         }
     }
 
     // ── Block dispatcher ─────────────────────────────────────────────────────
 
-    private float DrawBlock(SKCanvas canvas, ContentBlock block, float x, float y, float width, bool includeMermaid, List<MermaidOverlayLayout>? collector)
+    private float DrawBlock(SKCanvas canvas, ContentBlock block, float x, float y, float width, bool includeMermaid, List<MermaidOverlayLayout>? collector, MermaidFocusRenderState? mermaidFocus)
     {
         return block.Kind switch
         {
@@ -157,7 +193,7 @@ internal sealed class SlideRenderer
             BlockKind.BlockQuote   => DrawBlockQuote(canvas, block, x, y, width),
             BlockKind.Callout      => DrawCallout(canvas, block, x, y, width),
             BlockKind.Paragraph    => DrawParagraph(canvas, block.RawContent, x, y, width),
-            BlockKind.MermaidBlock => DrawMermaidPlaceholder(canvas, block.RawContent, x, y, width, includeMermaid, collector),
+            BlockKind.MermaidBlock => DrawMermaidPlaceholder(canvas, block.RawContent, x, y, width, includeMermaid, collector, mermaidFocus),
             _                      => y + 16f,
         };
     }
@@ -169,6 +205,7 @@ internal sealed class SlideRenderer
         float size = block.RawContent.StartsWith("## ") ? 28f : 22f;
         string text = block.RawContent.TrimStart('#').Trim();
         DrawText(canvas, text, x, y, _bold, size, Accent, SKTextAlign.Left);
+        RecordOccupiedRect(x, y, MeasureTextWidth(text, _bold, size), size * 1.35f);
         return y + size + 12f;
     }
 
@@ -196,6 +233,7 @@ internal sealed class SlideRenderer
 
         using var bgPaint = new SKPaint { Color = CodeBg, IsAntialias = true };
         canvas.DrawRoundRect(new SKRoundRect(new SKRect(x, y, x + width, y + boxH), 6f), bgPaint);
+        RecordOccupiedRect(new SKRect(x, y, x + width, y + boxH));
 
         float ty = y + pad + lineH - 4f;
         foreach (var line in lines)
@@ -210,6 +248,7 @@ internal sealed class SlideRenderer
     {
         using var barPaint = new SKPaint { Color = Accent, IsAntialias = true };
         canvas.DrawRect(new SKRect(x, y, x + 4f, y + 36f), barPaint);
+        RecordOccupiedRect(new SKRect(x, y, x + 4f, y + 36f));
         DrawWrapped(canvas, StripInlineMarkdown(block.RawContent.TrimStart('>', ' ')),
                     x + 14f, y, width - 14f, _regular, 22f, QuoteFg);
         return y + 44f;
@@ -231,6 +270,7 @@ internal sealed class SlideRenderer
         var rect = new SKRect(x, y, x + width, y + boxH);
         canvas.DrawRoundRect(new SKRoundRect(rect, 6f), bgPaint);
         canvas.DrawRoundRect(new SKRoundRect(rect, 6f), borderPaint);
+        RecordOccupiedRect(rect);
 
         float ty = y + pad;
         if (!string.IsNullOrEmpty(block.CalloutTitle))
@@ -248,7 +288,7 @@ internal sealed class SlideRenderer
         return bottom + 12f;
     }
 
-    private float DrawMermaidPlaceholder(SKCanvas canvas, string source, float x, float y, float width, bool includeMermaid, List<MermaidOverlayLayout>? collector)
+    private float DrawMermaidPlaceholder(SKCanvas canvas, string source, float x, float y, float width, bool includeMermaid, List<MermaidOverlayLayout>? collector, MermaidFocusRenderState? mermaidFocus)
     {
         if (_diagrams.TryGetValue(source, out var asset) && asset is { Format: MermaidRenderFormat.Png })
         {
@@ -256,25 +296,41 @@ internal sealed class SlideRenderer
             if (img is null)
                 return y + 16f;
 
-            float footerTop = SlideHeight - 38f;
-            float maxH  = footerTop - y - 16f;
-            float scale = Math.Min(1f, Math.Min(width / img.Width, maxH / img.Height));
-            float dw    = img.Width  * scale;
-            float dh    = img.Height * scale;
-            float dx    = x + (width - dw) / 2f;
+            var sourceRect = GetVisibleImageBounds(img);
 
-            collector?.Add(new MermaidOverlayLayout(source, new SKRect(dx, y, dx + dw, y + dh)));
+            float footerTop = SlideHeight - 38f;
+            var availableRect = GetBestInlineMermaidAvailableRect(x, y, width, footerTop, sourceRect.Width, sourceRect.Height);
+            if (availableRect.Width <= 0f || availableRect.Height <= 0f)
+                return y + 16f;
+
+            float scale = Math.Min(1f, Math.Min(availableRect.Width / sourceRect.Width, availableRect.Height / sourceRect.Height));
+            if (!float.IsFinite(scale) || scale < InlineMermaidMinScale)
+                return y + 16f;
+
+            float dw    = sourceRect.Width * scale;
+            float dh    = sourceRect.Height * scale;
+            float dx    = availableRect.Left + (availableRect.Width - dw) / 2f;
+            float dy    = availableRect.Top + (availableRect.Height - dh) / 2f;
+            var targetRect = new SKRect(dx, dy, dx + dw, dy + dh);
+            RecordLayoutDebugRect(targetRect, SKColors.DeepSkyBlue, "mermaid");
+            ValidateInlineMermaidPlacement(source, targetRect, mermaidFocus);
+
+            collector?.Add(new MermaidOverlayLayout(source, targetRect));
 
             if (!includeMermaid)
-                return y + dh + 16f;
+                return dy + dh + InlineMermaidGap;
+
+            if (IsFocusedMermaidSource(source, mermaidFocus))
+                return dy + dh + InlineMermaidGap;
 
             using var paint = new SKPaint { IsAntialias = true };
             canvas.DrawImage(
                 img,
-                new SKRect(dx, y, dx + dw, y + dh),
+                sourceRect,
+                targetRect,
                 new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear),
                 paint);
-            return y + dh + 16f;
+            return dy + dh + InlineMermaidGap;
         }
 
         float boxH = 80f;
@@ -290,6 +346,276 @@ internal sealed class SlideRenderer
         using var bgPaint = new SKPaint { Color = Surface, IsAntialias = true };
         canvas.DrawRoundRect(new SKRoundRect(rect, 6f), bgPaint);
         DrawText(canvas, "[ diagram ]", rect.MidX, rect.MidY + 8f, _regular, 18f, TextMuted, SKTextAlign.Center);
+    }
+
+    private static bool IsFocusedMermaidSource(string source, MermaidFocusRenderState? focus)
+    {
+        if (focus is null)
+            return false;
+
+        return string.Equals(focus.From?.Source, source, StringComparison.Ordinal) ||
+               string.Equals(focus.To?.Source, source, StringComparison.Ordinal);
+    }
+
+    private void DrawFocusedMermaidOverlay(SKCanvas canvas, MermaidFocusRenderState? focus)
+    {
+        if (focus is null)
+            return;
+
+        DrawFocusedMermaidFrame(canvas, focus.From);
+        DrawFocusedMermaidFrame(canvas, focus.To);
+    }
+
+    private void DrawFocusedMermaidFrame(SKCanvas canvas, MermaidFocusFrame? frame)
+    {
+        if (frame is null)
+            return;
+
+        if (!_diagrams.TryGetValue(frame.Source, out var asset) || asset is not { Format: MermaidRenderFormat.Png })
+            return;
+
+        using var img = SKImage.FromEncodedData(asset.Content);
+        if (img is null)
+            return;
+
+        var sourceRect = GetVisibleImageBounds(img);
+
+        var targetRect = LerpRect(frame.Bounds, GetFocusedMermaidRect(sourceRect.Width, sourceRect.Height), EaseOutCubic(frame.Progress));
+        if (targetRect.Width <= 0f || targetRect.Height <= 0f)
+            return;
+
+        using var imagePaint = new SKPaint { IsAntialias = true, Color = SKColors.White };
+        canvas.DrawImage(img, sourceRect, targetRect, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear), imagePaint);
+    }
+
+    private static SKRect GetVisibleImageBounds(SKImage image)
+    {
+        using var bitmap = SKBitmap.FromImage(image);
+        if (!bitmap.ReadyToDraw)
+            return new SKRect(0f, 0f, image.Width, image.Height);
+
+        const byte alphaThreshold = 48;
+        int minX = bitmap.Width;
+        int minY = bitmap.Height;
+        int maxX = -1;
+        int maxY = -1;
+        var pixels = bitmap.Pixels;
+        for (int y = 0; y < bitmap.Height; y++)
+        {
+            int rowStart = y * bitmap.Width;
+            for (int x = 0; x < bitmap.Width; x++)
+            {
+                if (pixels[rowStart + x].Alpha < alphaThreshold)
+                    continue;
+
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+            }
+        }
+
+        if (maxX < minX || maxY < minY)
+            return new SKRect(0f, 0f, image.Width, image.Height);
+
+        return new SKRect(minX, minY, maxX + 1, maxY + 1);
+    }
+
+    private static SKRect GetInlineMermaidAvailableRect(float x, float y, float width, float footerTop)
+    {
+        float left = x;
+        float top = y;
+        float right = x + width;
+        float bottom = footerTop - InlineMermaidGap;
+
+        return right <= left || bottom <= top
+            ? SKRect.Empty
+            : new SKRect(left, top, right, bottom);
+    }
+
+    private SKRect GetBestInlineMermaidAvailableRect(float x, float y, float width, float footerTop, float imageWidth, float imageHeight)
+    {
+        var bestRect = GetInlineMermaidAvailableRect(x, y, width, footerTop);
+        float bestScale = GetInlineMermaidFitScale(bestRect, imageWidth, imageHeight);
+        RecordLayoutDebugRect(bestRect, SKColors.LimeGreen, "full");
+
+        if (_occupiedBodyRects is null || _occupiedBodyRects.Count == 0)
+            return bestRect;
+
+        var occupiedBounds = GetOccupiedBounds(x, x + width, footerTop);
+        if (occupiedBounds is null)
+            return bestRect;
+
+        var belowRect = new SKRect(
+            x,
+            Math.Max(y, occupiedBounds.Value.Bottom + InlineMermaidGap),
+            x + width,
+            footerTop - InlineMermaidGap);
+        float belowScale = GetInlineMermaidFitScale(belowRect, imageWidth, imageHeight);
+        RecordLayoutDebugRect(belowRect, SKColors.Goldenrod, "below");
+        if (belowScale > bestScale)
+        {
+            bestRect = belowRect;
+            bestScale = belowScale;
+        }
+
+        var rightRect = new SKRect(occupiedBounds.Value.Right + InlineMermaidGap, occupiedBounds.Value.Top, x + width, footerTop - InlineMermaidGap);
+        float rightScale = GetInlineMermaidFitScale(rightRect, imageWidth, imageHeight);
+        RecordLayoutDebugRect(rightRect, SKColors.OrangeRed, "right");
+        if (rightScale > bestScale)
+        {
+            bestRect = rightRect;
+            bestScale = rightScale;
+        }
+
+        var leftRect = new SKRect(x, occupiedBounds.Value.Top, occupiedBounds.Value.Left - InlineMermaidGap, footerTop - InlineMermaidGap);
+        float leftScale = GetInlineMermaidFitScale(leftRect, imageWidth, imageHeight);
+        RecordLayoutDebugRect(leftRect, SKColors.MediumPurple, "left");
+        if (leftScale > bestScale)
+            bestRect = leftRect;
+
+        RecordLayoutDebugRect(bestRect, SKColors.Cyan, "best");
+
+        return bestRect;
+    }
+
+    private SKRect? GetOccupiedBounds(float minX, float maxX, float maxBottom)
+    {
+        if (_occupiedBodyRects is null || _occupiedBodyRects.Count == 0)
+            return null;
+
+        SKRect? bounds = null;
+        foreach (var rect in _occupiedBodyRects)
+        {
+            if (rect.Right <= minX || rect.Left >= maxX || rect.Top >= maxBottom)
+                continue;
+
+            bounds = bounds is null
+                ? rect
+                : SKRect.Union(bounds.Value, rect);
+        }
+
+        return bounds;
+    }
+
+    private static float GetInlineMermaidFitScale(SKRect availableRect, float imageWidth, float imageHeight)
+    {
+        if (availableRect.Width <= 0f || availableRect.Height <= 0f)
+            return 0f;
+
+        float scale = Math.Min(1f, Math.Min(availableRect.Width / imageWidth, availableRect.Height / imageHeight));
+        return float.IsFinite(scale) ? scale : 0f;
+    }
+
+    private static SKRect GetFocusedMermaidRect(float imageWidth, float imageHeight)
+    {
+        const float maxWidth = SlideWidth * 0.88f;
+        const float maxHeight = SlideHeight * 0.72f;
+        float scale = Math.Min(maxWidth / imageWidth, maxHeight / imageHeight);
+        float width = imageWidth * scale;
+        float height = imageHeight * scale;
+        float left = (SlideWidth - width) / 2f;
+        float top = (SlideHeight - height) / 2f;
+        return new SKRect(left, top, left + width, top + height);
+    }
+
+    private static SKRect LerpRect(SKRect from, SKRect to, float t)
+    {
+        return new SKRect(
+            Lerp(from.Left, to.Left, t),
+            Lerp(from.Top, to.Top, t),
+            Lerp(from.Right, to.Right, t),
+            Lerp(from.Bottom, to.Bottom, t));
+    }
+
+    private static float Lerp(float from, float to, float t) => from + ((to - from) * t);
+
+    private void RecordOccupiedRect(float x, float y, float width, float height)
+    {
+        RecordOccupiedRect(new SKRect(x, y, x + width, y + height));
+    }
+
+    private void RecordOccupiedRect(SKRect rect)
+    {
+        if (_occupiedBodyRects is null || rect.Width <= 0f || rect.Height <= 0f)
+            return;
+
+        _occupiedBodyRects.Add(rect);
+        RecordLayoutDebugRect(rect, SKColors.Red, "text");
+    }
+
+    private void RecordLayoutDebugRect(SKRect rect, SKColor color, string label)
+    {
+        if (_layoutDebugRects is null || rect.Width <= 0f || rect.Height <= 0f)
+            return;
+
+        _layoutDebugRects.Add(new LayoutDebugRect(rect, color, label));
+    }
+
+    private void DrawLayoutDebugOverlay(SKCanvas canvas)
+    {
+        if (_layoutDebugRects is null || _layoutDebugRects.Count == 0)
+            return;
+
+        foreach (var debugRect in _layoutDebugRects)
+        {
+            using var fillPaint = new SKPaint
+            {
+                Color = debugRect.Color.WithAlpha(36),
+                IsAntialias = true,
+                Style = SKPaintStyle.Fill,
+            };
+            using var strokePaint = new SKPaint
+            {
+                Color = debugRect.Color.WithAlpha(220),
+                IsAntialias = true,
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = 2f,
+            };
+
+            canvas.DrawRect(debugRect.Bounds, fillPaint);
+            canvas.DrawRect(debugRect.Bounds, strokePaint);
+            DrawText(canvas, debugRect.Label, debugRect.Bounds.Left + 4f, debugRect.Bounds.Top + 14f, _mono, 12f, debugRect.Color, SKTextAlign.Left);
+        }
+    }
+
+    private void ValidateInlineMermaidPlacement(string source, SKRect targetRect, MermaidFocusRenderState? mermaidFocus)
+    {
+        if (_layoutDebugRects is null || _occupiedBodyRects is null || IsFocusedMermaidSource(source, mermaidFocus))
+            return;
+
+        foreach (var occupiedRect in _occupiedBodyRects)
+        {
+            if (!targetRect.IntersectsWith(occupiedRect))
+                continue;
+
+            throw new InvalidOperationException(
+                $"Inline Mermaid overlaps occupied content on slide {_currentSlideIndex + 1}. Mermaid='{GetMermaidDebugLabel(source)}', target={FormatRect(targetRect)}, occupied={FormatRect(occupiedRect)}");
+        }
+    }
+
+    private static string GetMermaidDebugLabel(string source)
+    {
+        string singleLine = source.ReplaceLineEndings(" ").Trim();
+        return singleLine.Length <= 80 ? singleLine : singleLine[..80] + "...";
+    }
+
+    private static string FormatRect(SKRect rect)
+    {
+        return $"[{rect.Left:0.#},{rect.Top:0.#},{rect.Right:0.#},{rect.Bottom:0.#}]";
+    }
+
+    private float MeasureTextWidth(string text, SKTypeface face, float size)
+    {
+        using var font = new SKFont(face, size);
+        return font.MeasureText(text);
+    }
+
+    private static float EaseOutCubic(float t)
+    {
+        float clamped = Math.Clamp(t, 0f, 1f);
+        float inverse = 1f - clamped;
+        return 1f - (inverse * inverse * inverse);
     }
 
     // ── Footer ───────────────────────────────────────────────────────────────
@@ -328,6 +654,7 @@ internal sealed class SlideRenderer
         foreach (var line in WrapText(text, font, maxWidth))
         {
             canvas.DrawText(line, x, y + size, SKTextAlign.Left, font, paint);
+            RecordOccupiedRect(x, y, font.MeasureText(line), lineH);
             y += lineH;
         }
         return y;
@@ -397,4 +724,10 @@ internal sealed class SlideRenderer
     }
 
     public readonly record struct MermaidOverlayLayout(string Source, SKRect Bounds);
+
+    private readonly record struct LayoutDebugRect(SKRect Bounds, SKColor Color, string Label);
+
+    public sealed record MermaidFocusRenderState(MermaidFocusFrame? From, MermaidFocusFrame? To, float Progress);
+
+    public sealed record MermaidFocusFrame(string Source, SKRect Bounds, float Progress);
 }
