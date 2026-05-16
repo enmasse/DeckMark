@@ -162,6 +162,7 @@ void ConfigureWindow(WindowRenderState target, bool enableInput)
 
     target.Window.Resize += size => RebuildSurface(target, size.X, size.Y);
     target.Window.Render += _ => RenderWindow(target);
+    target.Window.Closing += target.DisposeGraphics;
 }
 
 void RefreshDirtyFrames()
@@ -391,10 +392,18 @@ sealed class WindowRenderState : IDisposable
     public IInputContext? Input { get; set; }
     public int DirtyFrames { get; set; }
 
-    public void Dispose()
+    public void DisposeGraphics()
     {
         Input?.Dispose();
+        Input = null;
         TransitionRenderer?.Dispose();
+        TransitionRenderer = null;
+        Gl = null;
+    }
+
+    public void Dispose()
+    {
+        DisposeGraphics();
         Window.Dispose();
     }
 }
