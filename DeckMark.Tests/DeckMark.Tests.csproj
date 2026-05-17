@@ -20,10 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DeckMark.Core\DeckMark.Core.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="..\DeckMark\AgenticTerminal-presentation.deck.md" CopyToOutputDirectory="PreserveNewest" Link="TestData\AgenticTerminal-presentation.deck.md" />
+    <ProjectReference Include="..\DeckMark.Viewer\DeckMark.Viewer.csproj" />
   </ItemGroup>
 
 </Project>

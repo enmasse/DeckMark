@@ -324,12 +324,7 @@ internal sealed class SlideRenderer
                 return dy + dh + InlineMermaidGap;
 
             using var paint = new SKPaint { IsAntialias = true };
-            canvas.DrawImage(
-                img,
-                sourceRect,
-                targetRect,
-                new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear),
-                paint);
+            canvas.DrawImage(img, sourceRect, targetRect, paint);
             return dy + dh + InlineMermaidGap;
         }
 
@@ -385,7 +380,7 @@ internal sealed class SlideRenderer
             return;
 
         using var imagePaint = new SKPaint { IsAntialias = true, Color = SKColors.White };
-        canvas.DrawImage(img, sourceRect, targetRect, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear), imagePaint);
+        canvas.DrawImage(img, sourceRect, targetRect, imagePaint);
     }
 
     private static SKRect GetVisibleImageBounds(SKImage image)

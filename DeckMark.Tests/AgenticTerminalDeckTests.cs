@@ -9,15 +9,102 @@ namespace DeckMark.Tests;
 
 public class AgenticTerminalDeckTests : IDisposable
 {
-    private static readonly string DeckPath =
-        Path.Combine(AppContext.BaseDirectory, "TestData", "AgenticTerminal-presentation.deck.md");
+    private const string DeckSource = """
+        :::deck
+        title: AgenticTerminal
+        author: Mats Alritzson
+        footer: AgenticTerminal · .NET 10 · Hex1b · Avalonia · GitHub Copilot SDK
+        :::
+
+        ---
+        # AgenticTerminal
+        @transition: fade
+
+        AgenticTerminal helps drive an interactive terminal presentation.
+
+        :::notes
+        Start with the problem statement.
+        :::
+
+        ---
+        # What the app does
+
+        - Starts an interactive shell session
+        - Connects to GitHub Copilot through GitHub.Copilot.SDK
+        - Sends prompts with terminal context
+
+        ---
+        # Startup flow
+
+        1. It resolves whether it should run as the full terminal experience.
+        2. It loads configuration and startup options.
+
+        ```mermaid
+        sequenceDiagram
+            participant User
+            participant Program
+            User->>Program: launch app
+            Program-->>User: ready
+        ```
+
+        ---
+        # Presenter mode
+
+        Toggle presentation mode independently from the audience screen.
+
+        ---
+        # Viewer controls
+
+        - Space advances slides
+        - Backspace goes back
+        - D toggles debug overlay
+
+        ---
+        # Mermaid focus
+
+        Focused diagrams zoom into a highlighted view.
+
+        ---
+        # Rendering
+
+        Slides are rendered with SkiaSharp.
+
+        ---
+        # Input handling
+
+        Mouse drag pans the content while scroll zooms.
+
+        ---
+        # Transitions
+
+        Slide transitions are resolved from the current or previous slide.
+
+        ---
+        # Notes support
+
+        Speaker notes stay out of the visible slide body.
+
+        ---
+        # Layout debugging
+
+        Debug overlays visualize occupied regions and Mermaid bounds.
+
+        ---
+        # Regression coverage
+
+        Tests should rely on self-contained input.
+
+        ---
+        # Summary
+
+        AgenticTerminal combines parsing, rendering, and presentation features.
+        """;
 
     private readonly List<string> _tempFiles = [];
 
     private string ConvertDeckToFile()
     {
-        var source = File.ReadAllText(DeckPath);
-        var doc = DeckMarkParser.Parse(source);
+        var doc = DeckMarkParser.Parse(DeckSource);
         var path = Path.GetTempFileName() + ".pptx";
         _tempFiles.Add(path);
         new PptxConverter(new MermaidPlaceholderRenderer()).Convert(doc, path);
@@ -33,58 +120,49 @@ public class AgenticTerminalDeckTests : IDisposable
     [Fact]
     public void Parse_AgenticTerminalDeck_ExtractsDeckTitle()
     {
-        var source = File.ReadAllText(DeckPath);
-        var doc = DeckMarkParser.Parse(source);
+        var doc = DeckMarkParser.Parse(DeckSource);
         Assert.Equal("AgenticTerminal", doc.Header.Title);
     }
 
     [Fact]
     public void Parse_AgenticTerminalDeck_ExtractsAuthor()
     {
-        var source = File.ReadAllText(DeckPath);
-        var doc = DeckMarkParser.Parse(source);
+        var doc = DeckMarkParser.Parse(DeckSource);
         Assert.Equal("Mats Alritzson", doc.Header.Author);
     }
 
     [Fact]
     public void Parse_AgenticTerminalDeck_ProducesExpectedSlideCount()
     {
-        var source = File.ReadAllText(DeckPath);
-        var doc = DeckMarkParser.Parse(source);
-        // The deck has 13 slides (separated by ---)
+        var doc = DeckMarkParser.Parse(DeckSource);
         Assert.Equal(13, doc.Slides.Count);
     }
 
     [Fact]
     public void Parse_AgenticTerminalDeck_FirstSlideTitleIsAgenticTerminal()
     {
-        var source = File.ReadAllText(DeckPath);
-        var doc = DeckMarkParser.Parse(source);
+        var doc = DeckMarkParser.Parse(DeckSource);
         Assert.Equal("AgenticTerminal", doc.Slides[0].Title);
     }
 
     [Fact]
     public void Parse_AgenticTerminalDeck_FirstSlideHasFadeTransition()
     {
-        var source = File.ReadAllText(DeckPath);
-        var doc = DeckMarkParser.Parse(source);
+        var doc = DeckMarkParser.Parse(DeckSource);
         Assert.Equal("fade", doc.Slides[0].Transition);
     }
 
     [Fact]
     public void Parse_AgenticTerminalDeck_SecondSlideHasNoExplicitTransition()
     {
-        var source = File.ReadAllText(DeckPath);
-        var doc = DeckMarkParser.Parse(source);
+        var doc = DeckMarkParser.Parse(DeckSource);
         Assert.Null(doc.Slides[1].Transition);
     }
 
     [Fact]
     public void Parse_AgenticTerminalDeck_NotesBlockIsNotInSlideBody()
     {
-        var source = File.ReadAllText(DeckPath);
-        var doc = DeckMarkParser.Parse(source);
-        // The first slide has a :::notes block; its text should not appear in the body blocks
+        var doc = DeckMarkParser.Parse(DeckSource);
         var firstSlide = doc.Slides[0];
         var bodyText = string.Join(" ", firstSlide.Body.Select(b => b.ToString()));
         Assert.DoesNotContain("Start with the problem statement", bodyText);
@@ -103,8 +181,7 @@ public class AgenticTerminalDeckTests : IDisposable
     [Fact]
     public void Convert_AgenticTerminalDeck_SlideCountAtLeastSourceCount()
     {
-        var source = File.ReadAllText(DeckPath);
-        var doc = DeckMarkParser.Parse(source);
+        var doc = DeckMarkParser.Parse(DeckSource);
         var path = ConvertDeckToFile();
 
         using var prs = PresentationDocument.Open(path, false);

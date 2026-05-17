@@ -396,9 +396,9 @@ public sealed class PptxConverter
         pSlide.AddNamespaceDeclaration("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
         pSlide.AddNamespaceDeclaration("p", "http://schemas.openxmlformats.org/presentationml/2006/main");
         pSlide.Append(csd);
+        pSlide.Append(new P.ColorMapOverride(new A.MasterColorMapping()));
         if (CreateTransition(effectiveTransition) is P.Transition transition)
             pSlide.Append(transition);
-        pSlide.Append(new P.ColorMapOverride(new A.MasterColorMapping()));
         return pSlide;
     }
 

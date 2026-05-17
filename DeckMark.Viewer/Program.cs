@@ -174,7 +174,14 @@ void RefreshDirtyFrames()
     if (state.IsTransitionActive(now))
         state.Dirty = true;
 
+    bool hadMermaidAnimation = state.MermaidAnimationStartedAt is not null;
     if (state.IsMermaidAnimationActive(now))
+    {
+        presenterView.TransitionRenderer?.InvalidateTextures();
+        audienceView?.TransitionRenderer?.InvalidateTextures();
+        state.Dirty = true;
+    }
+    else if (hadMermaidAnimation && state.MermaidAnimationStartedAt is null)
     {
         presenterView.TransitionRenderer?.InvalidateTextures();
         audienceView?.TransitionRenderer?.InvalidateTextures();
@@ -237,42 +244,11 @@ void RenderSlide(SKCanvas canvas, int slideIndex)
 
 SlideRenderer.MermaidFocusRenderState? CreateMermaidFocusRenderState(int slideIndex)
 {
-    if (slideIndex != state.SlideIndex)
-        return null;
-
     var layouts = slideIndex >= 0 && slideIndex < mermaidLayoutsBySlide.Length
         ? mermaidLayoutsBySlide[slideIndex]
         : [];
 
-    if (layouts.Count == 0)
-        return null;
-
-    var now = DateTimeOffset.UtcNow;
-    bool isAnimating = state.IsMermaidAnimationActive(now);
-    if (!isAnimating)
-        return null;
-
-    float progress = state.GetMermaidAnimationProgress(now);
-
-    var fromFrame = CreateMermaidFocusFrame(layouts, state.MermaidAnimationFromIndex, 1f - progress);
-    var toFrame = CreateMermaidFocusFrame(
-        layouts,
-        state.MermaidAnimationToIndex,
-        progress);
-
-    if (fromFrame is null && toFrame is null)
-        return null;
-
-    return new SlideRenderer.MermaidFocusRenderState(fromFrame, toFrame, progress);
-}
-
-static SlideRenderer.MermaidFocusFrame? CreateMermaidFocusFrame(IReadOnlyList<SlideRenderer.MermaidOverlayLayout> layouts, int? index, float progress)
-{
-    if (index is null || index < 0 || index >= layouts.Count)
-        return null;
-
-    var layout = layouts[index.Value];
-    return new SlideRenderer.MermaidFocusFrame(layout.Source, layout.Bounds, progress);
+    return MermaidFocusStateFactory.Create(slideIndex, state.SlideIndex, layouts, state, DateTimeOffset.UtcNow);
 }
 
 static void PrintNotes(Slide slide, int index, int total)
