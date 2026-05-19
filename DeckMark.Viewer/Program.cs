@@ -76,48 +76,27 @@ var presenterWindowOptions = WindowOptions.Default with
 IWindow presenterWindow = Window.Create(presenterWindowOptions);
 var windowPlatform = Window.GetWindowPlatform(false)
     ?? throw new InvalidOperationException("Unable to resolve the window platform.");
-var monitors = windowPlatform.GetMonitors().OrderBy(m => m.Index).ToArray();
-if (monitors.Length == 0)
-    throw new InvalidOperationException("No monitors detected for the current window platform.");
-var mainMonitor = windowPlatform.GetMainMonitor() ?? monitors[0];
-var presenterMonitor = monitors.FirstOrDefault(m =>
-{
-    var bounds = m.Bounds;
-    return presenterWindowOptions.Position.X >= bounds.Origin.X &&
-           presenterWindowOptions.Position.X < bounds.Origin.X + bounds.Size.X &&
-           presenterWindowOptions.Position.Y >= bounds.Origin.Y &&
-           presenterWindowOptions.Position.Y < bounds.Origin.Y + bounds.Size.Y;
-}) ?? mainMonitor;
-var presentationMonitor = monitors.FirstOrDefault(IsUsablePresentationMonitor);
-bool hasSecondaryMonitor = presentationMonitor is not null;
-IWindow? audienceWindow = hasSecondaryMonitor
-    ? Window.Create(presenterWindowOptions with
-    {
-        Title = $"{deck.Header.Title} — DeckMark Presentation",
-        IsVisible = false,
-        TopMost = true,
-        WindowBorder = WindowBorder.Hidden,
-    })
-    : null;
+var displayTopology = DisplayTopologyController.Create();
+var monitors = Array.Empty<IMonitor>();
+IMonitor mainMonitor = null!;
+IMonitor presenterMonitor = null!;
+IMonitor? presentationMonitor;
+
+RefreshMonitorSelection();
+
+IWindow? audienceWindow = null;
 
 var isPresentationMode = false;
 var commandQueue = new ConcurrentQueue<Action>();
 using var shutdownCts = new CancellationTokenSource();
 
 var presenterView = new WindowRenderState(presenterWindow);
-WindowRenderState? audienceView = audienceWindow is not null
-    ? new WindowRenderState(audienceWindow)
-    : null;
+WindowRenderState? audienceView = null;
 
 PrintCommandHelp();
 var consoleTask = Task.Run(() => RunConsoleLoop(shutdownCts.Token));
 
 ConfigureWindow(presenterView, enableInput: true);
-if (audienceView is WindowRenderState audienceRenderState)
-    ConfigureWindow(audienceRenderState, enableInput: false);
-
-if (audienceWindow is not null)
-    audienceWindow.Initialize();
 
 presenterWindow.Update += _ =>
 {
@@ -164,7 +143,11 @@ void ConfigureWindow(WindowRenderState target, bool enableInput)
         if (enableInput)
         {
             target.Input = target.Window.CreateInput();
-            var handler = new InputHandler(state);
+            var handler = new InputHandler(state, key =>
+            {
+                if (TryCreateCommand(new ConsoleKeyInfo('\0', key, false, false, false), out var action))
+                    commandQueue.Enqueue(action);
+            });
             handler.Attach(target.Input);
         }
 
@@ -173,6 +156,108 @@ void ConfigureWindow(WindowRenderState target, bool enableInput)
 
     target.Window.Resize += size => RebuildSurface(target, size.X, size.Y);
     target.Window.Render += _ => RenderWindow(target);
+}
+
+WindowRenderState EnsureAudienceView()
+{
+    if (audienceView is not null && audienceWindow is not null && !audienceWindow.IsClosing)
+        return audienceView;
+
+    audienceWindow = Window.Create(presenterWindowOptions with
+    {
+        Title = $"{deck.Header.Title} — DeckMark Presentation",
+        IsVisible = false,
+        TopMost = true,
+        WindowBorder = WindowBorder.Hidden,
+    });
+
+    audienceView = new WindowRenderState(audienceWindow);
+    ConfigureWindow(audienceView, enableInput: false);
+    audienceWindow.Initialize();
+    return audienceView;
+}
+
+void DisposeAudienceView()
+{
+    if (audienceWindow is not null && !audienceWindow.IsClosing)
+        audienceWindow.Close();
+
+    audienceView?.Dispose();
+    audienceView = null;
+    audienceWindow = null;
+}
+
+IMonitor[] GetOrderedMonitors()
+{
+    return windowPlatform.GetMonitors().OrderBy(m => m.Index).ToArray();
+}
+
+IMonitor GetPresenterMonitor(IReadOnlyList<IMonitor> availableMonitors)
+{
+    return availableMonitors.FirstOrDefault(m =>
+    {
+        var bounds = m.Bounds;
+        return presenterWindowOptions.Position.X >= bounds.Origin.X &&
+               presenterWindowOptions.Position.X < bounds.Origin.X + bounds.Size.X &&
+               presenterWindowOptions.Position.Y >= bounds.Origin.Y &&
+               presenterWindowOptions.Position.Y < bounds.Origin.Y + bounds.Size.Y;
+    }) ?? mainMonitor;
+}
+
+void RefreshMonitorSelection()
+{
+    monitors = GetOrderedMonitors();
+    if (monitors.Length == 0)
+        throw new InvalidOperationException("No monitors detected for the current window platform.");
+
+    mainMonitor = windowPlatform.GetMainMonitor() ?? monitors[0];
+    presenterMonitor = GetPresenterMonitor(monitors);
+    presentationMonitor = monitors.FirstOrDefault(IsUsablePresentationMonitor);
+}
+
+bool WaitForPresentationMonitor(TimeSpan timeout, TimeSpan pollInterval)
+{
+    var deadline = DateTimeOffset.UtcNow + timeout;
+    int? stableMonitorIndex = null;
+    Rectangle<int> stableBounds = default;
+    int stablePollCount = 0;
+
+    do
+    {
+        RefreshMonitorSelection();
+
+        if (presentationMonitor is not null && HasUsableBounds(presentationMonitor.Bounds))
+        {
+            var bounds = presentationMonitor.Bounds;
+            if (stableMonitorIndex == presentationMonitor.Index &&
+                bounds.Origin == stableBounds.Origin &&
+                bounds.Size == stableBounds.Size)
+            {
+                stablePollCount++;
+            }
+            else
+            {
+                stableMonitorIndex = presentationMonitor.Index;
+                stableBounds = bounds;
+                stablePollCount = 1;
+            }
+
+            if (stablePollCount >= 3)
+                return true;
+        }
+        else
+        {
+            stableMonitorIndex = null;
+            stableBounds = default;
+            stablePollCount = 0;
+        }
+
+        Thread.Sleep(pollInterval);
+    }
+    while (DateTimeOffset.UtcNow < deadline);
+
+    RefreshMonitorSelection();
+    return presentationMonitor is not null && HasUsableBounds(presentationMonitor.Bounds);
 }
 
 void RefreshDirtyFrames()
@@ -201,7 +286,7 @@ void RefreshDirtyFrames()
     state.Dirty = false;
     presenterView.DirtyFrames = 2;
 
-    if (audienceView is not null && audienceView.Window.IsVisible)
+    if (audienceView?.Window.IsVisible == true)
         audienceView.DirtyFrames = 2;
 }
 
@@ -358,7 +443,7 @@ bool TryCreateCommand(ConsoleKeyInfo keyInfo, out Action action)
         ConsoleKey.S => () => PrintNotes(deck.Slides[state.SlideIndex], state.SlideIndex, deck.Slides.Count),
         ConsoleKey.Q => () =>
         {
-            audienceWindow?.Close();
+            DisposeAudienceView();
             presenterWindow.Close();
         },
         _ => null!,
@@ -392,6 +477,11 @@ int GetMermaidCount(int slideIndex)
     return mermaidLayoutsBySlide[slideIndex].Count;
 }
 
+static bool HasUsableBounds(Rectangle<int> bounds)
+{
+    return bounds.Size.X > 0 && bounds.Size.Y > 0;
+}
+
 bool IsUsablePresentationMonitor(IMonitor monitor)
 {
     if (monitor.Index == mainMonitor.Index)
@@ -399,6 +489,14 @@ bool IsUsablePresentationMonitor(IMonitor monitor)
 
     var mainBounds = mainMonitor.Bounds;
     var candidateBounds = monitor.Bounds;
+    bool mainHasUsableBounds = HasUsableBounds(mainBounds);
+
+    if (!HasUsableBounds(candidateBounds))
+        return false;
+
+    if (!mainHasUsableBounds)
+        return true;
+
     return candidateBounds.Origin != mainBounds.Origin ||
            candidateBounds.Size != mainBounds.Size;
 }
@@ -413,55 +511,27 @@ static Vector2D<int> GetPresentationWindowSize(IMonitor monitor)
 
 void TogglePresentationMode()
 {
-    if (audienceWindow is null || audienceWindow.IsClosing)
-    {
-        Console.WriteLine("Presentation mode requires a clearly distinct secondary monitor; refusing to use the main display.");
-        return;
-    }
-
-    if (isPresentationMode)
-    {
-        ExitPresentationMode();
-        return;
-    }
-
-    audienceWindow.WindowState = WindowState.Normal;
-    audienceWindow.Monitor = presentationMonitor!;
-    var bounds = presentationMonitor.Bounds;
-    audienceWindow.Position = bounds.Origin;
-    audienceWindow.Size = GetPresentationWindowSize(presentationMonitor);
-    audienceWindow.TopMost = true;
-    audienceWindow.IsVisible = true;
-    audienceWindow.WindowState = WindowState.Normal;
-    state.ResetZoom();
-    presenterView.TransitionRenderer?.InvalidateTextures();
-    audienceView?.TransitionRenderer?.InvalidateTextures();
-    isPresentationMode = true;
-
-    Console.WriteLine($"Presentation mode on monitor {presentationMonitor.Index}: {presentationMonitor.Name}. Presenter view remains on monitor {presenterMonitor.Index}: {presenterMonitor.Name}. Main monitor is {mainMonitor.Index}: {mainMonitor.Name}.");
+    Console.WriteLine("Presentation mode is temporarily disabled.");
 }
 
 void ExitPresentationMode()
 {
     if (audienceWindow is null || audienceWindow.IsClosing)
-    {
-        if (presenterWindow.WindowState != WindowState.Fullscreen)
-            return;
-
-        presenterWindow.WindowState = WindowState.Normal;
-        state.ResetZoom();
-        Console.WriteLine("Presentation mode off.");
         return;
-    }
 
     if (!isPresentationMode)
         return;
 
-    audienceWindow.WindowState = WindowState.Normal;
-    audienceWindow.IsVisible = false;
+    DisposeAudienceView();
+
+    if (!displayTopology.TryRestoreDisplayTopology(out var topologyMessage))
+        Console.WriteLine(topologyMessage);
+    else if (!string.IsNullOrWhiteSpace(topologyMessage))
+        Console.WriteLine(topologyMessage);
+
+    RefreshMonitorSelection();
     state.ResetZoom();
     presenterView.TransitionRenderer?.InvalidateTextures();
-    audienceView?.TransitionRenderer?.InvalidateTextures();
     isPresentationMode = false;
 
     Console.WriteLine("Presentation mode off.");
@@ -469,7 +539,7 @@ void ExitPresentationMode()
 
 static void PrintCommandHelp()
 {
-    Console.WriteLine("Terminal keys: Space/Right/Down/N next, Backspace/Left/Up/P previous, +/- zoom, 0 reset, D debug overlay, F fill, F11/M present, Esc/W windowed, S notes, H/? help, Q quit");
+    Console.WriteLine("Terminal keys: Space/Right/Down/N next, Backspace/Left/Up/P previous, +/- zoom, 0 reset, D debug overlay, F fill, F11/M presentation disabled, Esc/W windowed, S notes, H/? help, Q quit");
 }
 
 sealed class WindowRenderState : IDisposable
