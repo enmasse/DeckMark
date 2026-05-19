@@ -1,3 +1,4 @@
+using Silk.NET.GLFW;
 using Silk.NET.OpenGL;
 using SkiaSharp;
 using System.Numerics;
@@ -83,7 +84,7 @@ internal sealed class SlideTransitionRenderer : IDisposable
     public void InvalidateTextures()
     {
         foreach (var texture in _slideTextures.Values)
-            _gl.DeleteTexture(texture);
+            TryDeleteTexture(texture);
 
         _slideTextures.Clear();
     }
@@ -115,11 +116,54 @@ internal sealed class SlideTransitionRenderer : IDisposable
             return;
 
         InvalidateTextures();
-        _gl.DeleteBuffer(_vbo);
-        _gl.DeleteBuffer(_ebo);
-        _gl.DeleteVertexArray(_vao);
-        _gl.DeleteProgram(_program);
+        TryDeleteBuffer(_vbo);
+        TryDeleteBuffer(_ebo);
+        TryDeleteVertexArray(_vao);
+        TryDeleteProgram(_program);
         _disposed = true;
+    }
+
+    private void TryDeleteTexture(uint texture)
+    {
+        if (texture == 0)
+            return;
+
+        TryRunGlCleanup(() => _gl.DeleteTexture(texture));
+    }
+
+    private void TryDeleteBuffer(uint buffer)
+    {
+        if (buffer == 0)
+            return;
+
+        TryRunGlCleanup(() => _gl.DeleteBuffer(buffer));
+    }
+
+    private void TryDeleteVertexArray(uint vao)
+    {
+        if (vao == 0)
+            return;
+
+        TryRunGlCleanup(() => _gl.DeleteVertexArray(vao));
+    }
+
+    private void TryDeleteProgram(uint program)
+    {
+        if (program == 0)
+            return;
+
+        TryRunGlCleanup(() => _gl.DeleteProgram(program));
+    }
+
+    private static void TryRunGlCleanup(Action cleanup)
+    {
+        try
+        {
+            cleanup();
+        }
+        catch (GlfwException ex) when (ex.Message.Contains("NoContext", StringComparison.OrdinalIgnoreCase))
+        {
+        }
     }
 
     private void PrepareFrame(int viewportWidth, int viewportHeight)

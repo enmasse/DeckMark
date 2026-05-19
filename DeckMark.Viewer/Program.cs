@@ -33,7 +33,7 @@ if (deck.Slides.Count == 0)
 var state = new ViewerState { SlideCount = deck.Slides.Count };
 
 // Pre-render mermaid diagrams before opening the window
-var mermaidRenderer = new MermaidInkRenderer(MermaidRenderFormat.Png);
+var mermaidRenderer = new PersistentMermaidCacheRenderer(new MermaidInkRenderer(MermaidRenderFormat.Png));
 var diagrams = new Dictionary<string, MermaidRenderAsset?>();
 foreach (var slide in deck.Slides)
     CollectMermaid(slide.Body);
@@ -79,16 +79,24 @@ var windowPlatform = Window.GetWindowPlatform(false)
 var monitors = windowPlatform.GetMonitors().OrderBy(m => m.Index).ToArray();
 if (monitors.Length == 0)
     throw new InvalidOperationException("No monitors detected for the current window platform.");
-var primaryMonitor = windowPlatform.GetMainMonitor() ?? monitors[0];
-var presentationMonitor = monitors.FirstOrDefault(m => m.Index != primaryMonitor.Index) ?? primaryMonitor;
-bool hasSecondaryMonitor = presentationMonitor.Index != primaryMonitor.Index;
-var presenterParent = presenterWindow.Parent;
+var mainMonitor = windowPlatform.GetMainMonitor() ?? monitors[0];
+var presenterMonitor = monitors.FirstOrDefault(m =>
+{
+    var bounds = m.Bounds;
+    return presenterWindowOptions.Position.X >= bounds.Origin.X &&
+           presenterWindowOptions.Position.X < bounds.Origin.X + bounds.Size.X &&
+           presenterWindowOptions.Position.Y >= bounds.Origin.Y &&
+           presenterWindowOptions.Position.Y < bounds.Origin.Y + bounds.Size.Y;
+}) ?? mainMonitor;
+var presentationMonitor = monitors.FirstOrDefault(IsUsablePresentationMonitor);
+bool hasSecondaryMonitor = presentationMonitor is not null;
 IWindow? audienceWindow = hasSecondaryMonitor
-    ? presenterParent?.CreateWindow(presenterWindowOptions with
+    ? Window.Create(presenterWindowOptions with
     {
         Title = $"{deck.Header.Title} — DeckMark Presentation",
         IsVisible = false,
         TopMost = true,
+        WindowBorder = WindowBorder.Hidden,
     })
     : null;
 
@@ -165,7 +173,6 @@ void ConfigureWindow(WindowRenderState target, bool enableInput)
 
     target.Window.Resize += size => RebuildSurface(target, size.X, size.Y);
     target.Window.Render += _ => RenderWindow(target);
-    target.Window.Closing += target.DisposeGraphics;
 }
 
 void RefreshDirtyFrames()
@@ -385,15 +392,30 @@ int GetMermaidCount(int slideIndex)
     return mermaidLayoutsBySlide[slideIndex].Count;
 }
 
+bool IsUsablePresentationMonitor(IMonitor monitor)
+{
+    if (monitor.Index == mainMonitor.Index)
+        return false;
+
+    var mainBounds = mainMonitor.Bounds;
+    var candidateBounds = monitor.Bounds;
+    return candidateBounds.Origin != mainBounds.Origin ||
+           candidateBounds.Size != mainBounds.Size;
+}
+
+static Vector2D<int> GetPresentationWindowSize(IMonitor monitor)
+{
+    var resolution = monitor.VideoMode.Resolution;
+    return resolution is { X: > 0, Y: > 0 } fullResolution
+        ? fullResolution
+        : monitor.Bounds.Size;
+}
+
 void TogglePresentationMode()
 {
     if (audienceWindow is null || audienceWindow.IsClosing)
     {
-        presenterWindow.WindowState = presenterWindow.WindowState == WindowState.Fullscreen
-            ? WindowState.Normal
-            : WindowState.Fullscreen;
-        state.ResetZoom();
-        Console.WriteLine($"Presentation mode {(presenterWindow.WindowState == WindowState.Fullscreen ? "on" : "off")} on primary monitor.");
+        Console.WriteLine("Presentation mode requires a clearly distinct secondary monitor; refusing to use the main display.");
         return;
     }
 
@@ -404,13 +426,19 @@ void TogglePresentationMode()
     }
 
     audienceWindow.WindowState = WindowState.Normal;
-    audienceWindow.Monitor = presentationMonitor;
+    audienceWindow.Monitor = presentationMonitor!;
+    var bounds = presentationMonitor.Bounds;
+    audienceWindow.Position = bounds.Origin;
+    audienceWindow.Size = GetPresentationWindowSize(presentationMonitor);
+    audienceWindow.TopMost = true;
     audienceWindow.IsVisible = true;
-    audienceWindow.WindowState = WindowState.Fullscreen;
+    audienceWindow.WindowState = WindowState.Normal;
     state.ResetZoom();
+    presenterView.TransitionRenderer?.InvalidateTextures();
+    audienceView?.TransitionRenderer?.InvalidateTextures();
     isPresentationMode = true;
 
-    Console.WriteLine($"Presentation mode on monitor {presentationMonitor.Index}: {presentationMonitor.Name}. Presenter view remains on the primary screen.");
+    Console.WriteLine($"Presentation mode on monitor {presentationMonitor.Index}: {presentationMonitor.Name}. Presenter view remains on monitor {presenterMonitor.Index}: {presenterMonitor.Name}. Main monitor is {mainMonitor.Index}: {mainMonitor.Name}.");
 }
 
 void ExitPresentationMode()
@@ -432,6 +460,8 @@ void ExitPresentationMode()
     audienceWindow.WindowState = WindowState.Normal;
     audienceWindow.IsVisible = false;
     state.ResetZoom();
+    presenterView.TransitionRenderer?.InvalidateTextures();
+    audienceView?.TransitionRenderer?.InvalidateTextures();
     isPresentationMode = false;
 
     Console.WriteLine("Presentation mode off.");
@@ -444,6 +474,8 @@ static void PrintCommandHelp()
 
 sealed class WindowRenderState : IDisposable
 {
+    private bool _graphicsDisposed;
+
     public WindowRenderState(IWindow window)
     {
         Window = window;
@@ -457,11 +489,15 @@ sealed class WindowRenderState : IDisposable
 
     public void DisposeGraphics()
     {
+        if (_graphicsDisposed)
+            return;
+
         Input?.Dispose();
         Input = null;
         TransitionRenderer?.Dispose();
         TransitionRenderer = null;
         Gl = null;
+        _graphicsDisposed = true;
     }
 
     public void Dispose()
