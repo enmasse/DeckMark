@@ -15,9 +15,10 @@ internal sealed class SlideRenderer
     public const float SlideHeight = 720f;
     private const float InlineMermaidGap = 16f;
     private const float InlineMermaidMinScale = 0.20f;
+    private const byte SlideBackgroundAlpha = 0x30;
 
     // Theme colours
-    private static readonly SKColor Background  = new(0x1E, 0x1E, 0x2E);
+    private static readonly SKColor Background  = new(0x1E, 0x1E, 0x2E, SlideBackgroundAlpha);
     private static readonly SKColor Surface      = new(0x31, 0x32, 0x44);
     private static readonly SKColor Accent       = new(0x89, 0xB4, 0xFA);
     private static readonly SKColor TextPrimary  = new(0xCD, 0xD6, 0xF4);

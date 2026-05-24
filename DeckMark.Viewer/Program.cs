@@ -263,6 +263,7 @@ bool WaitForPresentationMonitor(TimeSpan timeout, TimeSpan pollInterval)
 void RefreshDirtyFrames()
 {
     var now = DateTimeOffset.UtcNow;
+    state.Dirty = true;
     if (state.IsTransitionActive(now))
         state.Dirty = true;
 

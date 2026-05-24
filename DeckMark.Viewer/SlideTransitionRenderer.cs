@@ -11,6 +11,7 @@ internal sealed class SlideTransitionRenderer : IDisposable
     private const float NearPlane = 64f;
     private const float FarPlane = 8192f;
     private const float TextureOversample = 2f;
+    private const float AmbientTextureScale = 1f;
 
     private static readonly Vector2[] LocalCorners =
     [
@@ -30,6 +31,7 @@ internal sealed class SlideTransitionRenderer : IDisposable
 
     private readonly GL _gl;
     private readonly Action<SKCanvas, int> _renderSlide;
+    private readonly AmbientBackgroundAnimator _ambientBackground = new();
     private readonly Dictionary<int, uint> _slideTextures = [];
     private readonly uint _program;
     private readonly uint _vao;
@@ -37,6 +39,9 @@ internal sealed class SlideTransitionRenderer : IDisposable
     private readonly uint _ebo;
     private readonly int _opacityLocation;
     private readonly int _shadeLocation;
+    private uint _ambientTexture;
+    private int _ambientTextureWidth;
+    private int _ambientTextureHeight;
     private bool _disposed;
 
     public SlideTransitionRenderer(GL gl, Action<SKCanvas, int> renderSlide)
@@ -92,7 +97,7 @@ internal sealed class SlideTransitionRenderer : IDisposable
     public void RenderSlide(int viewportWidth, int viewportHeight, int slideIndex, float zoom, SKPoint pan, bool fillMode)
     {
         var context = CreateProjectionContext(viewportWidth, viewportHeight, zoom, pan, fillMode);
-        PrepareFrame(viewportWidth, viewportHeight);
+        BeginFrame(viewportWidth, viewportHeight, DateTimeOffset.UtcNow);
 
         DrawVisual(context, new SlideVisual(slideIndex, 1f, Vector3.Zero, Vector3.Zero, Vector3.One));
         CompleteFrame();
@@ -101,7 +106,7 @@ internal sealed class SlideTransitionRenderer : IDisposable
     public void RenderTransition(int viewportWidth, int viewportHeight, SlideTransitionKind transitionKind, int fromSlideIndex, int toSlideIndex, float progress, float zoom, SKPoint pan, bool fillMode)
     {
         var context = CreateProjectionContext(viewportWidth, viewportHeight, zoom, pan, fillMode);
-        PrepareFrame(viewportWidth, viewportHeight);
+        BeginFrame(viewportWidth, viewportHeight, DateTimeOffset.UtcNow);
 
         var visuals = BuildTransitionVisuals(transitionKind, fromSlideIndex, toSlideIndex, progress);
         foreach (var visual in visuals.OrderBy(v => v.DepthSort))
@@ -116,6 +121,7 @@ internal sealed class SlideTransitionRenderer : IDisposable
             return;
 
         InvalidateTextures();
+        TryDeleteTexture(_ambientTexture);
         TryDeleteBuffer(_vbo);
         TryDeleteBuffer(_ebo);
         TryDeleteVertexArray(_vao);
@@ -172,7 +178,7 @@ internal sealed class SlideTransitionRenderer : IDisposable
         _gl.Disable(GLEnum.CullFace);
         _gl.Disable(GLEnum.DepthTest);
         _gl.Enable(GLEnum.Blend);
-        _gl.BlendFunc(GLEnum.SrcAlpha, GLEnum.OneMinusSrcAlpha);
+        _gl.BlendFunc(GLEnum.One, GLEnum.OneMinusSrcAlpha);
         _gl.ClearColor(0.07f, 0.07f, 0.12f, 1f);
         _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit));
         _gl.UseProgram(_program);
@@ -185,6 +191,29 @@ internal sealed class SlideTransitionRenderer : IDisposable
         _gl.BindVertexArray(0);
         _gl.BindTexture(GLEnum.Texture2D, 0);
         _gl.UseProgram(0);
+    }
+
+    private void BeginFrame(int viewportWidth, int viewportHeight, DateTimeOffset now)
+    {
+        PrepareFrame(viewportWidth, viewportHeight);
+        DrawAmbientLayer(viewportWidth, viewportHeight, now);
+    }
+
+    private void DrawAmbientLayer(int viewportWidth, int viewportHeight, DateTimeOffset now)
+    {
+        uint texture = GetOrCreateAmbientLayerTexture(viewportWidth, viewportHeight, now);
+        if (texture == 0)
+            return;
+
+        Span<float> vertices =
+        [
+            -1f,  1f, 0f, 0f, 0f,
+             1f,  1f, 0f, 1f, 0f,
+             1f, -1f, 0f, 1f, 1f,
+            -1f, -1f, 0f, 0f, 1f,
+        ];
+
+        DrawTexturedQuad(texture, vertices, 1f, 1f);
     }
 
 
@@ -211,8 +240,13 @@ internal sealed class SlideTransitionRenderer : IDisposable
             vertices[offset + 4] = TextureCorners[i].Y;
         }
 
+        DrawTexturedQuad(texture, vertices, visual.Opacity, shade);
+    }
+
+    private void DrawTexturedQuad(uint texture, Span<float> vertices, float opacity, float shade)
+    {
         _gl.BindTexture(GLEnum.Texture2D, texture);
-        _gl.Uniform1(_opacityLocation, visual.Opacity);
+        _gl.Uniform1(_opacityLocation, opacity);
         _gl.Uniform1(_shadeLocation, shade);
 
         unsafe
@@ -228,6 +262,51 @@ internal sealed class SlideTransitionRenderer : IDisposable
         {
             _gl.DrawElements(GLEnum.Triangles, 6, GLEnum.UnsignedInt, null);
         }
+    }
+
+    private uint GetOrCreateAmbientLayerTexture(int viewportWidth, int viewportHeight, DateTimeOffset now)
+    {
+        int textureWidth = Math.Max(1, (int)MathF.Ceiling(viewportWidth * AmbientTextureScale));
+        int textureHeight = Math.Max(1, (int)MathF.Ceiling(viewportHeight * AmbientTextureScale));
+
+        if (_ambientTexture == 0 || textureWidth != _ambientTextureWidth || textureHeight != _ambientTextureHeight)
+        {
+            TryDeleteTexture(_ambientTexture);
+            _ambientTexture = _gl.GenTexture();
+            _ambientTextureWidth = textureWidth;
+            _ambientTextureHeight = textureHeight;
+
+            _gl.BindTexture(GLEnum.Texture2D, _ambientTexture);
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMinFilter, (int)GLEnum.Linear);
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMagFilter, (int)GLEnum.Linear);
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapS, (int)GLEnum.ClampToEdge);
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapT, (int)GLEnum.ClampToEdge);
+        }
+
+        var info = new SKImageInfo(textureWidth, textureHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using var surface = SKSurface.Create(info);
+        if (surface is null)
+            return 0;
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        _ambientBackground.Draw(surface.Canvas, textureWidth, textureHeight, now);
+        surface.Canvas.Flush();
+
+        using var image = surface.Snapshot();
+        using var bitmap = SKBitmap.FromImage(image);
+        if (!bitmap.ReadyToDraw)
+            return 0;
+
+        _gl.BindTexture(GLEnum.Texture2D, _ambientTexture);
+        unsafe
+        {
+            fixed (byte* pixelPtr = bitmap.GetPixelSpan())
+            {
+                _gl.TexImage2D(GLEnum.Texture2D, 0, (int)GLEnum.Rgba8, (uint)bitmap.Width, (uint)bitmap.Height, 0, GLEnum.Rgba, GLEnum.UnsignedByte, pixelPtr);
+            }
+        }
+
+        return _ambientTexture;
     }
 
     private uint GetOrCreateTexture(int slideIndex)
