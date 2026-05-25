@@ -85,6 +85,59 @@ public sealed class ViewerRegressionTests
         Assert.Equal(1f, focus.Progress);
     }
 
+    [Fact]
+    public void GetExecutableCodeLayouts_CollectsRunnableCodeBlocks()
+    {
+        var renderer = new SlideRenderer();
+        var slide = new Slide
+        {
+            Title = "Code",
+            Body =
+            [
+                new ContentBlock
+                {
+                    Kind = BlockKind.CodeBlock,
+                    Language = "csharp",
+                    IsExecutable = true,
+                    RawContent = "return 42;",
+                },
+            ],
+        };
+
+        var layout = Assert.Single(renderer.GetExecutableCodeLayouts(slide, new DeckHeader(), 0, 1));
+        Assert.Equal(0, layout.Index);
+        Assert.True(layout.Bounds.Width > 0f);
+        Assert.True(layout.Bounds.Height > 0f);
+    }
+
+    [Fact]
+    public void GetExecutableCodeOverlay_ReturnsPanelAndRunButton()
+    {
+        var renderer = new SlideRenderer();
+        var slide = new Slide
+        {
+            Title = "Code",
+            Body =
+            [
+                new ContentBlock
+                {
+                    Kind = BlockKind.CodeBlock,
+                    Language = "csharp",
+                    IsExecutable = true,
+                    RawContent = "return 42;",
+                },
+            ],
+        };
+
+        var layouts = renderer.GetExecutableCodeLayouts(slide, new DeckHeader(), 0, 1);
+        var overlay = renderer.GetExecutableCodeOverlay(layouts, focusedIndex: 0, codeOutput: "42");
+
+        Assert.NotNull(overlay);
+        Assert.True(overlay.Value.PanelBounds.Width > 0f);
+        Assert.True(overlay.Value.RunButtonBounds.Width > 0f);
+        Assert.True(overlay.Value.PanelBounds.Contains(overlay.Value.RunButtonBounds.Left, overlay.Value.RunButtonBounds.Top));
+    }
+
     private static SKRect FindColorBounds(SKBitmap bitmap, Func<SKColor, bool> predicate)
     {
         int minX = bitmap.Width;

@@ -189,6 +189,28 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_ExecutableCodeBlock_SetsExecutableFlag()
+    {
+        var doc = Parse("""
+            :::deck
+            title: X
+            :::
+
+            ---
+            # Slide
+
+            ```csharp exec
+            var x = 1;
+            ```
+            """);
+
+        var code = doc.Slides[0].Body.FirstOrDefault(b => b.Kind == BlockKind.CodeBlock);
+        Assert.NotNull(code);
+        Assert.Equal("csharp", code.Language);
+        Assert.True(code.IsExecutable);
+    }
+
+    [Fact]
     public void Parse_MermaidBlock_ProducesMermaidBlock()
     {
         var doc = Parse("""

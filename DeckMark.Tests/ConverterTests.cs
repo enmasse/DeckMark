@@ -162,6 +162,27 @@ public class ConverterTests : IDisposable
         Assert.Contains("var x = 42;", xml);
     }
 
+    [Fact]
+    public void Convert_ExecutableCodeBlock_ContentStillAppearsInSlide()
+    {
+        var path = ConvertToFile("""
+            :::deck
+            title: Test
+            :::
+
+            ---
+            # Code
+
+            ```csharp exec
+            var x = 42;
+            ```
+            """);
+
+        using var prs = PresentationDocument.Open(path, false);
+        var xml = prs.PresentationPart!.SlideParts.First().Slide.OuterXml;
+        Assert.Contains("var x = 42;", xml);
+    }
+
     // ── Mermaid placeholder ───────────────────────────────────────────────────
 
     [Fact]

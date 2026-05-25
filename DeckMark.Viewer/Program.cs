@@ -41,6 +41,10 @@ var renderer = new SlideRenderer(diagrams);
 var mermaidLayoutsBySlide = deck.Slides
     .Select((slide, index) => renderer.GetMermaidLayouts(slide, deck.Header, index, deck.Slides.Count))
     .ToArray();
+var executableCodeLayoutsBySlide = deck.Slides
+    .Select((slide, index) => renderer.GetExecutableCodeLayouts(slide, deck.Header, index, deck.Slides.Count))
+    .ToArray();
+var codeExecutor = new CodeExecutor();
 
 void CollectMermaid(IEnumerable<DeckMark.Core.Model.ContentBlock> blocks)
 {
@@ -89,6 +93,7 @@ IWindow? audienceWindow = null;
 var isPresentationMode = false;
 var commandQueue = new ConcurrentQueue<Action>();
 using var shutdownCts = new CancellationTokenSource();
+CancellationTokenSource? codeExecutionCts = null;
 
 var presenterView = new WindowRenderState(presenterWindow);
 WindowRenderState? audienceView = null;
@@ -119,6 +124,7 @@ presenterWindow.Run();
 if (audienceWindow is not null && !audienceWindow.IsClosing)
     audienceWindow.Close();
 
+CancelCodeExecution();
 shutdownCts.Cancel();
 try
 {
@@ -147,7 +153,7 @@ void ConfigureWindow(WindowRenderState target, bool enableInput)
             {
                 if (TryCreateCommand(new ConsoleKeyInfo('\0', key, false, false, false), out var action))
                     commandQueue.Enqueue(action);
-            });
+            }, position => commandQueue.Enqueue(() => HandlePointerClick(position, target.Window.Size)));
             handler.Attach(target.Input);
         }
 
@@ -329,10 +335,13 @@ void RenderSlide(SKCanvas canvas, int slideIndex)
 {
     var slide = deck.Slides[slideIndex];
     var mermaidFocus = CreateMermaidFocusRenderState(slideIndex);
-    if (mermaidFocus is null)
-        renderer.Draw(canvas, slide, deck.Header, slideIndex, deck.Slides.Count, includeMermaid: true, showLayoutDebugOverlay: state.ShowLayoutDebugOverlay);
-    else
+    var executableOverlay = renderer.GetExecutableCodeOverlay(GetExecutableCodeLayouts(slideIndex), state.FocusedExecutableCodeBlockIndex, state.ExecutableCodeOutput);
+    if (mermaidFocus is not null)
         renderer.Draw(canvas, slide, deck.Header, slideIndex, deck.Slides.Count, mermaidFocus, showLayoutDebugOverlay: state.ShowLayoutDebugOverlay);
+    else if (executableOverlay is not null)
+        renderer.Draw(canvas, slide, deck.Header, slideIndex, deck.Slides.Count, executableOverlay, state.ExecutableCodeRunState, state.ExecutableCodeOutput, showLayoutDebugOverlay: state.ShowLayoutDebugOverlay);
+    else
+        renderer.Draw(canvas, slide, deck.Header, slideIndex, deck.Slides.Count, includeMermaid: true, showLayoutDebugOverlay: state.ShowLayoutDebugOverlay);
 }
 
 SlideRenderer.MermaidFocusRenderState? CreateMermaidFocusRenderState(int slideIndex)
@@ -431,15 +440,22 @@ bool TryCreateCommand(ConsoleKeyInfo keyInfo, out Action action)
         ConsoleKey.OemPlus or ConsoleKey.Add => () => state.ZoomIn(),
         ConsoleKey.OemMinus or ConsoleKey.Subtract => () => state.ZoomOut(),
         ConsoleKey.D0 or ConsoleKey.NumPad0 => () => state.ResetZoom(),
+        ConsoleKey.Enter or ConsoleKey.R => () => RunFocusedExecutableCodeBlock(),
         ConsoleKey.D => () =>
         {
             state.ToggleLayoutDebugOverlay();
-            presenterView.TransitionRenderer?.InvalidateTextures();
-            audienceView?.TransitionRenderer?.InvalidateTextures();
+            InvalidateSlideTextures();
         },
         ConsoleKey.F => () => state.ToggleFill(),
         ConsoleKey.F11 or ConsoleKey.M => () => TogglePresentationMode(),
-        ConsoleKey.Escape or ConsoleKey.W => () => ExitPresentationMode(),
+        ConsoleKey.Escape => () =>
+        {
+            if (state.FocusedExecutableCodeBlockIndex is not null)
+                CloseFocusedExecutableCodeBlock();
+            else
+                ExitPresentationMode();
+        },
+        ConsoleKey.W => () => ExitPresentationMode(),
         ConsoleKey.H or ConsoleKey.Oem2 => () => PrintCommandHelp(),
         ConsoleKey.S => () => PrintNotes(deck.Slides[state.SlideIndex], state.SlideIndex, deck.Slides.Count),
         ConsoleKey.Q => () =>
@@ -467,6 +483,8 @@ string? ResolveTransition(int slideIndex)
 
 void OnSlideChanged()
 {
+    CancelCodeExecution();
+    state.ClearExecutableCodeBlockFocus();
     PrintNotes(deck.Slides[state.SlideIndex], state.SlideIndex, deck.Slides.Count);
 }
 
@@ -476,6 +494,137 @@ int GetMermaidCount(int slideIndex)
         return 0;
 
     return mermaidLayoutsBySlide[slideIndex].Count;
+}
+
+IReadOnlyList<SlideRenderer.ExecutableCodeLayout> GetExecutableCodeLayouts(int slideIndex)
+{
+    if (slideIndex < 0 || slideIndex >= executableCodeLayoutsBySlide.Length)
+        return [];
+
+    return executableCodeLayoutsBySlide[slideIndex];
+}
+
+void InvalidateSlideTextures()
+{
+    presenterView.TransitionRenderer?.InvalidateTextures();
+    audienceView?.TransitionRenderer?.InvalidateTextures();
+}
+
+void CloseFocusedExecutableCodeBlock()
+{
+    CancelCodeExecution();
+    state.ClearExecutableCodeBlockFocus();
+    InvalidateSlideTextures();
+}
+
+void RunFocusedExecutableCodeBlock()
+{
+    if (state.FocusedExecutableCodeBlockIndex is null)
+        return;
+
+    var layout = GetExecutableCodeLayouts(state.SlideIndex)
+        .FirstOrDefault(layout => layout.Index == state.FocusedExecutableCodeBlockIndex.Value);
+
+    if (!layout.Block.IsExecutable)
+        return;
+
+    CancelCodeExecution();
+    state.BeginExecutableCodeRun();
+    InvalidateSlideTextures();
+
+    codeExecutionCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+    var executionToken = codeExecutionCts.Token;
+    _ = Task.Run(async () =>
+    {
+        CodeExecutionResult result;
+        try
+        {
+            result = await codeExecutor.ExecuteAsync(layout.Block, executionToken);
+        }
+        catch (OperationCanceledException)
+        {
+            result = new CodeExecutionResult(ExecutableCodeRunState.Failed, "Körningen avbröts eller tog för lång tid.");
+        }
+        catch (Exception ex)
+        {
+            result = new CodeExecutionResult(ExecutableCodeRunState.Failed, ex.Message);
+        }
+
+        commandQueue.Enqueue(() =>
+        {
+            if (state.FocusedExecutableCodeBlockIndex != layout.Index)
+                return;
+
+            state.CompleteExecutableCodeRun(result);
+            InvalidateSlideTextures();
+        });
+    }, executionToken);
+}
+
+void CancelCodeExecution()
+{
+    if (codeExecutionCts is null)
+        return;
+
+    codeExecutionCts.Cancel();
+    codeExecutionCts.Dispose();
+    codeExecutionCts = null;
+}
+
+void HandlePointerClick(System.Numerics.Vector2 position, Vector2D<int> windowSize)
+{
+    if (!TryMapWindowPositionToSlide(position, windowSize, out var slidePoint))
+        return;
+
+    var overlay = renderer.GetExecutableCodeOverlay(GetExecutableCodeLayouts(state.SlideIndex), state.FocusedExecutableCodeBlockIndex, state.ExecutableCodeOutput);
+    if (overlay is not null)
+    {
+        if (overlay.Value.RunButtonBounds.Contains(slidePoint.X, slidePoint.Y))
+        {
+            RunFocusedExecutableCodeBlock();
+            return;
+        }
+
+        if (!overlay.Value.PanelBounds.Contains(slidePoint.X, slidePoint.Y))
+        {
+            CloseFocusedExecutableCodeBlock();
+            return;
+        }
+    }
+
+    foreach (var layout in GetExecutableCodeLayouts(state.SlideIndex))
+    {
+        if (!layout.Bounds.Contains(slidePoint.X, slidePoint.Y))
+            continue;
+
+        state.FocusExecutableCodeBlock(layout.Index);
+        InvalidateSlideTextures();
+        return;
+    }
+}
+
+bool TryMapWindowPositionToSlide(System.Numerics.Vector2 position, Vector2D<int> windowSize, out SKPoint slidePoint)
+{
+    slidePoint = SKPoint.Empty;
+    if (windowSize.X <= 0 || windowSize.Y <= 0)
+        return false;
+
+    float aspect = windowSize.X / (float)windowSize.Y;
+    float tanHalfY = MathF.Tan(MathF.PI / 8f);
+    float tanHalfX = tanHalfY * aspect;
+    float distanceForHeight = (SlideRenderer.SlideHeight / 2f) / tanHalfY;
+    float distanceForWidth = (SlideRenderer.SlideWidth / 2f) / tanHalfX;
+    float cameraDistance = state.FillMode
+        ? MathF.Min(distanceForHeight, distanceForWidth)
+        : MathF.Max(distanceForHeight, distanceForWidth);
+    float ndcX = ((position.X / windowSize.X) * 2f) - 1f;
+    float ndcY = 1f - ((position.Y / windowSize.Y) * 2f);
+    float transformedX = ndcX * cameraDistance * tanHalfX;
+    float transformedY = ndcY * cameraDistance * tanHalfY;
+    float localX = (transformedX - state.Pan.X) / MathF.Max(state.Zoom, 0.01f);
+    float localY = (transformedY + state.Pan.Y) / MathF.Max(state.Zoom, 0.01f);
+    slidePoint = new SKPoint(localX + (SlideRenderer.SlideWidth / 2f), (SlideRenderer.SlideHeight / 2f) - localY);
+    return slidePoint.X >= 0f && slidePoint.X <= SlideRenderer.SlideWidth && slidePoint.Y >= 0f && slidePoint.Y <= SlideRenderer.SlideHeight;
 }
 
 static bool HasUsableBounds(Rectangle<int> bounds)
@@ -540,7 +689,7 @@ void ExitPresentationMode()
 
 static void PrintCommandHelp()
 {
-    Console.WriteLine("Terminal keys: Space/Right/Down/N next, Backspace/Left/Up/P previous, +/- zoom, 0 reset, D debug overlay, F fill, F11/M presentation disabled, Esc/W windowed, S notes, H/? help, Q quit");
+    Console.WriteLine("Terminal keys: Space/Right/Down/N next, Backspace/Left/Up/P previous, Enter/R run focused code, click code to open, +/- zoom, 0 reset, D debug overlay, F fill, F11/M presentation disabled, Esc close code/windowed, W windowed, S notes, H/? help, Q quit");
 }
 
 sealed class WindowRenderState : IDisposable

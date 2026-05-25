@@ -208,7 +208,13 @@ public static partial class DeckMarkParser
     private static ContentBlock ReadFencedCodeBlock(List<string> lines, ref int pos)
     {
         var openFence = lines[pos].TrimStart();
-        var lang = openFence[3..].Trim().ToLowerInvariant();
+        var fenceSpec = openFence[3..].Trim();
+        var tokens = fenceSpec.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var lang = tokens.FirstOrDefault()?.ToLowerInvariant() ?? string.Empty;
+        bool isExecutable = tokens.Skip(1).Any(static token =>
+            token.Equals("exec", StringComparison.OrdinalIgnoreCase) ||
+            token.Equals("run", StringComparison.OrdinalIgnoreCase) ||
+            token.Equals("runnable", StringComparison.OrdinalIgnoreCase));
         pos++;
         var sb = new StringBuilder();
         while (pos < lines.Count && !lines[pos].TrimStart().StartsWith("```"))
@@ -216,7 +222,13 @@ public static partial class DeckMarkParser
         if (pos < lines.Count) pos++; // consume closing ```
 
         var kind = lang == "mermaid" ? BlockKind.MermaidBlock : BlockKind.CodeBlock;
-        return new ContentBlock { Kind = kind, Language = lang, RawContent = sb.ToString().TrimEnd() };
+        return new ContentBlock
+        {
+            Kind = kind,
+            Language = string.IsNullOrEmpty(lang) ? null : lang,
+            IsExecutable = kind == BlockKind.CodeBlock && isExecutable,
+            RawContent = sb.ToString().TrimEnd(),
+        };
     }
 
     // ── Generic ::: directive block reader ───────────────────────────────────

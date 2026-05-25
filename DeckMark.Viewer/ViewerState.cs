@@ -64,9 +64,12 @@ internal sealed class ViewerState
     public bool FillMode { get; private set; }
     public bool ShowLayoutDebugOverlay { get; private set; }
     public int? FocusedMermaidIndex { get; private set; }
+    public int? FocusedExecutableCodeBlockIndex { get; private set; }
     public int? MermaidAnimationFromIndex { get; private set; }
     public int? MermaidAnimationToIndex { get; private set; }
     public DateTimeOffset? MermaidAnimationStartedAt { get; private set; }
+    public ExecutableCodeRunState ExecutableCodeRunState { get; private set; }
+    public string ExecutableCodeOutput { get; private set; } = string.Empty;
 
     public bool Dirty { get; set; } = true;
 
@@ -202,6 +205,40 @@ internal sealed class ViewerState
 
         BeginMermaidAnimation(FocusedMermaidIndex, null);
         FocusedMermaidIndex = null;
+        Dirty = true;
+    }
+
+    public bool FocusExecutableCodeBlock(int? index)
+    {
+        if (FocusedExecutableCodeBlockIndex == index)
+            return false;
+
+        FocusedExecutableCodeBlockIndex = index;
+        ExecutableCodeRunState = ExecutableCodeRunState.Idle;
+        ExecutableCodeOutput = string.Empty;
+        Dirty = true;
+        return true;
+    }
+
+    public void ClearExecutableCodeBlockFocus()
+    {
+        FocusExecutableCodeBlock(null);
+    }
+
+    public void BeginExecutableCodeRun()
+    {
+        if (FocusedExecutableCodeBlockIndex is null)
+            return;
+
+        ExecutableCodeRunState = ExecutableCodeRunState.Running;
+        ExecutableCodeOutput = string.Empty;
+        Dirty = true;
+    }
+
+    public void CompleteExecutableCodeRun(CodeExecutionResult result)
+    {
+        ExecutableCodeRunState = result.State;
+        ExecutableCodeOutput = result.Output;
         Dirty = true;
     }
 

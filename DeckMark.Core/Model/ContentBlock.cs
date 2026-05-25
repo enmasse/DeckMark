@@ -26,6 +26,9 @@ public sealed class ContentBlock
     /// <summary>Language tag for code/mermaid blocks.</summary>
     public string? Language { get; init; }
 
+    /// <summary>Marks a code block as executable in the viewer.</summary>
+    public bool IsExecutable { get; init; }
+
     /// <summary>Callout type (info, success, warning, danger).</summary>
     public string? CalloutType { get; init; }
 

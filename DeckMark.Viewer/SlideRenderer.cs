@@ -28,6 +28,10 @@ internal sealed class SlideRenderer
     private static readonly SKColor CalloutBg    = new(0x1E, 0x3A, 0x5F);
     private static readonly SKColor CalloutBorder= new(0x89, 0xB4, 0xFA);
     private static readonly SKColor QuoteFg      = new(0xF9, 0xE2, 0xAF);
+    private static readonly SKColor OverlayShade = new(0x00, 0x00, 0x00, 0x96);
+    private static readonly SKColor PanelSurface = new(0x11, 0x11, 0x1B, 0xF2);
+    private static readonly SKColor SuccessFg    = new(0xA6, 0xE3, 0xA1);
+    private static readonly SKColor ErrorFg      = new(0xF3, 0x8B, 0xA8);
 
     private readonly SKTypeface _regular;
     private readonly SKTypeface _bold;
@@ -36,6 +40,7 @@ internal sealed class SlideRenderer
     private List<SKRect>? _occupiedBodyRects;
     private List<LayoutDebugRect>? _layoutDebugRects;
     private int _currentSlideIndex;
+    private int _nextExecutableCodeBlockIndex;
 
     public SlideRenderer(IReadOnlyDictionary<string, MermaidRenderAsset?>? diagrams = null)
     {
@@ -54,51 +59,61 @@ internal sealed class SlideRenderer
 
     public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount)
     {
-        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, showLayoutDebugOverlay: false);
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, mermaidCollector: null, executableCollector: null, mermaidFocus: null, executableOverlay: null, showLayoutDebugOverlay: false, codeRunState: ExecutableCodeRunState.Idle, codeOutput: string.Empty);
     }
 
     public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid)
     {
-        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid, collector: null, mermaidFocus: null, showLayoutDebugOverlay: false);
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid, mermaidCollector: null, executableCollector: null, mermaidFocus: null, executableOverlay: null, showLayoutDebugOverlay: false, codeRunState: ExecutableCodeRunState.Idle, codeOutput: string.Empty);
     }
 
     public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid, bool showLayoutDebugOverlay)
     {
-        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid, collector: null, mermaidFocus: null, showLayoutDebugOverlay: showLayoutDebugOverlay);
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid, mermaidCollector: null, executableCollector: null, mermaidFocus: null, executableOverlay: null, showLayoutDebugOverlay: showLayoutDebugOverlay, codeRunState: ExecutableCodeRunState.Idle, codeOutput: string.Empty);
     }
 
     public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, MermaidFocusRenderState mermaidFocus)
     {
-        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, collector: null, mermaidFocus: mermaidFocus, showLayoutDebugOverlay: false);
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, mermaidCollector: null, executableCollector: null, mermaidFocus: mermaidFocus, executableOverlay: null, showLayoutDebugOverlay: false, codeRunState: ExecutableCodeRunState.Idle, codeOutput: string.Empty);
     }
 
     public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, MermaidFocusRenderState mermaidFocus, bool showLayoutDebugOverlay)
     {
-        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, collector: null, mermaidFocus: mermaidFocus, showLayoutDebugOverlay: showLayoutDebugOverlay);
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, mermaidCollector: null, executableCollector: null, mermaidFocus: mermaidFocus, executableOverlay: null, showLayoutDebugOverlay: showLayoutDebugOverlay, codeRunState: ExecutableCodeRunState.Idle, codeOutput: string.Empty);
     }
 
-    private void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid, List<MermaidOverlayLayout>? collector, MermaidFocusRenderState? mermaidFocus, bool showLayoutDebugOverlay)
+    public void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, ExecutableCodeOverlayLayout? executableOverlay, ExecutableCodeRunState codeRunState, string codeOutput, bool showLayoutDebugOverlay = false)
+    {
+        Draw(canvas, slide, header, slideIndex, slideCount, includeMermaid: true, mermaidCollector: null, executableCollector: null, mermaidFocus: null, executableOverlay: executableOverlay, showLayoutDebugOverlay: showLayoutDebugOverlay, codeRunState: codeRunState, codeOutput: codeOutput);
+    }
+
+    private void Draw(SKCanvas canvas, Slide slide, DeckHeader header, int slideIndex, int slideCount, bool includeMermaid, List<MermaidOverlayLayout>? mermaidCollector, List<ExecutableCodeLayout>? executableCollector, MermaidFocusRenderState? mermaidFocus, ExecutableCodeOverlayLayout? executableOverlay, bool showLayoutDebugOverlay, ExecutableCodeRunState codeRunState, string codeOutput)
     {
         canvas.Clear(Background);
 
         var previousOccupiedBodyRects = _occupiedBodyRects;
         var previousLayoutDebugRects = _layoutDebugRects;
         int previousSlideIndex = _currentSlideIndex;
+        int previousExecutableCodeBlockIndex = _nextExecutableCodeBlockIndex;
         _currentSlideIndex = slideIndex;
-        _occupiedBodyRects = collector is null ? [] : null;
-        _layoutDebugRects = showLayoutDebugOverlay && collector is null ? [] : null;
+        _nextExecutableCodeBlockIndex = 0;
+        _occupiedBodyRects = mermaidCollector is null && executableCollector is null ? [] : null;
+        _layoutDebugRects = showLayoutDebugOverlay && mermaidCollector is null && executableCollector is null ? [] : null;
 
         bool isTitle = slide.Layout is "title" or "section";
 
         if (isTitle)
-            DrawTitleLayout(canvas, slide, header, includeMermaid, collector, mermaidFocus);
+            DrawTitleLayout(canvas, slide, header, includeMermaid, mermaidCollector, executableCollector, mermaidFocus);
         else if (slide.Layout == "two-column")
-            DrawTwoColumnLayout(canvas, slide, includeMermaid, collector, mermaidFocus);
+            DrawTwoColumnLayout(canvas, slide, includeMermaid, mermaidCollector, executableCollector, mermaidFocus);
         else
-            DrawContentLayout(canvas, slide, includeMermaid, collector, mermaidFocus);
+            DrawContentLayout(canvas, slide, includeMermaid, mermaidCollector, executableCollector, mermaidFocus);
 
-        if (includeMermaid && collector is null)
+        if (includeMermaid && mermaidCollector is null)
             DrawFocusedMermaidOverlay(canvas, mermaidFocus);
+
+        if (executableCollector is null)
+            DrawExecutableCodeOverlay(canvas, executableOverlay, codeRunState, codeOutput);
 
         if (_layoutDebugRects is not null)
             DrawLayoutDebugOverlay(canvas);
@@ -107,6 +122,7 @@ internal sealed class SlideRenderer
         _occupiedBodyRects = previousOccupiedBodyRects;
         _layoutDebugRects = previousLayoutDebugRects;
         _currentSlideIndex = previousSlideIndex;
+        _nextExecutableCodeBlockIndex = previousExecutableCodeBlockIndex;
     }
 
     public IReadOnlyList<MermaidOverlayLayout> GetMermaidLayouts(Slide slide, DeckHeader header, int slideIndex, int slideCount)
@@ -116,13 +132,24 @@ internal sealed class SlideRenderer
             return [];
 
         var collector = new List<MermaidOverlayLayout>();
-        Draw(surface.Canvas, slide, header, slideIndex, slideCount, false, collector, null, showLayoutDebugOverlay: false);
+        Draw(surface.Canvas, slide, header, slideIndex, slideCount, false, collector, executableCollector: null, mermaidFocus: null, executableOverlay: null, showLayoutDebugOverlay: false, codeRunState: ExecutableCodeRunState.Idle, codeOutput: string.Empty);
+        return collector;
+    }
+
+    public IReadOnlyList<ExecutableCodeLayout> GetExecutableCodeLayouts(Slide slide, DeckHeader header, int slideIndex, int slideCount)
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(1, 1));
+        if (surface is null)
+            return [];
+
+        var collector = new List<ExecutableCodeLayout>();
+        Draw(surface.Canvas, slide, header, slideIndex, slideCount, includeMermaid: false, mermaidCollector: null, executableCollector: collector, mermaidFocus: null, executableOverlay: null, showLayoutDebugOverlay: false, codeRunState: ExecutableCodeRunState.Idle, codeOutput: string.Empty);
         return collector;
     }
 
     // ── Layouts ──────────────────────────────────────────────────────────────
 
-    private void DrawTitleLayout(SKCanvas canvas, Slide slide, DeckHeader header, bool includeMermaid, List<MermaidOverlayLayout>? collector = null, MermaidFocusRenderState? mermaidFocus = null)
+    private void DrawTitleLayout(SKCanvas canvas, Slide slide, DeckHeader header, bool includeMermaid, List<MermaidOverlayLayout>? mermaidCollector = null, List<ExecutableCodeLayout>? executableCollector = null, MermaidFocusRenderState? mermaidFocus = null)
     {
         bool hasBody = slide.Body.Count > 0;
 
@@ -138,10 +165,10 @@ internal sealed class SlideRenderer
 
         float bodyY = cy + 90f;
         foreach (var block in slide.Body)
-            bodyY = DrawBlock(canvas, block, 80f, bodyY, SlideWidth - 160f, includeMermaid, collector, mermaidFocus);
+            bodyY = DrawBlock(canvas, block, 80f, bodyY, SlideWidth - 160f, includeMermaid, mermaidCollector, executableCollector, mermaidFocus);
     }
 
-    private void DrawContentLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? collector = null, MermaidFocusRenderState? mermaidFocus = null)
+    private void DrawContentLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? mermaidCollector = null, List<ExecutableCodeLayout>? executableCollector = null, MermaidFocusRenderState? mermaidFocus = null)
     {
         float y = 60f;
         DrawText(canvas, slide.Title, 80f, y, _bold, 48f, Accent, SKTextAlign.Left);
@@ -149,10 +176,10 @@ internal sealed class SlideRenderer
         y += 90f;
 
         foreach (var block in slide.Body)
-            y = DrawBlock(canvas, block, 80f, y, SlideWidth - 160f, includeMermaid, collector, mermaidFocus);
+            y = DrawBlock(canvas, block, 80f, y, SlideWidth - 160f, includeMermaid, mermaidCollector, executableCollector, mermaidFocus);
     }
 
-    private void DrawTwoColumnLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? collector = null, MermaidFocusRenderState? mermaidFocus = null)
+    private void DrawTwoColumnLayout(SKCanvas canvas, Slide slide, bool includeMermaid, List<MermaidOverlayLayout>? mermaidCollector = null, List<ExecutableCodeLayout>? executableCollector = null, MermaidFocusRenderState? mermaidFocus = null)
     {
         float y = 60f;
         DrawText(canvas, slide.Title, 80f, y, _bold, 48f, Accent, SKTextAlign.Left);
@@ -170,31 +197,31 @@ internal sealed class SlideRenderer
                 float leftY  = y;
                 float rightY = y;
                 foreach (var b in block.Left)
-                    leftY = DrawBlock(canvas, b, leftX, leftY, colWidth, includeMermaid, collector, mermaidFocus);
+                    leftY = DrawBlock(canvas, b, leftX, leftY, colWidth, includeMermaid, mermaidCollector, executableCollector, mermaidFocus);
                 foreach (var b in block.Right)
-                    rightY = DrawBlock(canvas, b, rightX, rightY, colWidth, includeMermaid, collector, mermaidFocus);
+                    rightY = DrawBlock(canvas, b, rightX, rightY, colWidth, includeMermaid, mermaidCollector, executableCollector, mermaidFocus);
             }
             else
             {
-                y = DrawBlock(canvas, block, leftX, y, SlideWidth - 160f, includeMermaid, collector, mermaidFocus);
+                y = DrawBlock(canvas, block, leftX, y, SlideWidth - 160f, includeMermaid, mermaidCollector, executableCollector, mermaidFocus);
             }
         }
     }
 
     // ── Block dispatcher ─────────────────────────────────────────────────────
 
-    private float DrawBlock(SKCanvas canvas, ContentBlock block, float x, float y, float width, bool includeMermaid, List<MermaidOverlayLayout>? collector, MermaidFocusRenderState? mermaidFocus)
+    private float DrawBlock(SKCanvas canvas, ContentBlock block, float x, float y, float width, bool includeMermaid, List<MermaidOverlayLayout>? mermaidCollector, List<ExecutableCodeLayout>? executableCollector, MermaidFocusRenderState? mermaidFocus)
     {
         return block.Kind switch
         {
             BlockKind.Heading      => DrawHeading(canvas, block, x, y, width),
             BlockKind.BulletList   => DrawList(canvas, block, x, y, width, bullet: true),
             BlockKind.NumberedList => DrawList(canvas, block, x, y, width, bullet: false),
-            BlockKind.CodeBlock    => DrawCode(canvas, block, x, y, width),
+            BlockKind.CodeBlock    => DrawCode(canvas, block, x, y, width, executableCollector),
             BlockKind.BlockQuote   => DrawBlockQuote(canvas, block, x, y, width),
             BlockKind.Callout      => DrawCallout(canvas, block, x, y, width),
             BlockKind.Paragraph    => DrawParagraph(canvas, block.RawContent, x, y, width),
-            BlockKind.MermaidBlock => DrawMermaidPlaceholder(canvas, block.RawContent, x, y, width, includeMermaid, collector, mermaidFocus),
+            BlockKind.MermaidBlock => DrawMermaidPlaceholder(canvas, block.RawContent, x, y, width, includeMermaid, mermaidCollector, mermaidFocus),
             _                      => y + 16f,
         };
     }
@@ -225,16 +252,24 @@ internal sealed class SlideRenderer
         return y + 4f;
     }
 
-    private float DrawCode(SKCanvas canvas, ContentBlock block, float x, float y, float width)
+    private float DrawCode(SKCanvas canvas, ContentBlock block, float x, float y, float width, List<ExecutableCodeLayout>? executableCollector)
     {
         var lines  = block.RawContent.Split('\n');
         float lineH = 22f;
         float pad   = 16f;
         float boxH  = lines.Length * lineH + pad * 2f;
+        int executableCodeBlockIndex = block.IsExecutable ? _nextExecutableCodeBlockIndex++ : -1;
 
         using var bgPaint = new SKPaint { Color = CodeBg, IsAntialias = true };
-        canvas.DrawRoundRect(new SKRoundRect(new SKRect(x, y, x + width, y + boxH), 6f), bgPaint);
-        RecordOccupiedRect(new SKRect(x, y, x + width, y + boxH));
+        var rect = new SKRect(x, y, x + width, y + boxH);
+        canvas.DrawRoundRect(new SKRoundRect(rect, 6f), bgPaint);
+        RecordOccupiedRect(rect);
+
+        if (block.IsExecutable)
+        {
+            executableCollector?.Add(new ExecutableCodeLayout(executableCodeBlockIndex, block, rect));
+            DrawExecutableBadge(canvas, rect);
+        }
 
         float ty = y + pad + lineH - 4f;
         foreach (var line in lines)
@@ -243,6 +278,17 @@ internal sealed class SlideRenderer
             ty += lineH;
         }
         return y + boxH + 16f;
+    }
+
+    private void DrawExecutableBadge(SKCanvas canvas, SKRect rect)
+    {
+        const float badgeWidth = 84f;
+        const float badgeHeight = 28f;
+        var badgeRect = new SKRect(rect.Right - badgeWidth - 12f, rect.Top + 10f, rect.Right - 12f, rect.Top + 10f + badgeHeight);
+
+        using var badgePaint = new SKPaint { Color = Accent, IsAntialias = true };
+        canvas.DrawRoundRect(new SKRoundRect(badgeRect, 12f), badgePaint);
+        DrawText(canvas, "KÖRBAR", badgeRect.MidX, badgeRect.MidY + 5f, _bold, 12f, Background, SKTextAlign.Center);
     }
 
     private float DrawBlockQuote(SKCanvas canvas, ContentBlock block, float x, float y, float width)
@@ -382,6 +428,98 @@ internal sealed class SlideRenderer
 
         using var imagePaint = new SKPaint { IsAntialias = true, Color = SKColors.White };
         canvas.DrawImage(img, sourceRect, targetRect, imagePaint);
+    }
+
+    public ExecutableCodeOverlayLayout? GetExecutableCodeOverlay(IReadOnlyList<ExecutableCodeLayout> layouts, int? focusedIndex, string codeOutput)
+    {
+        if (focusedIndex is null)
+            return null;
+
+        foreach (var candidate in layouts)
+        {
+            if (candidate.Index != focusedIndex.Value)
+                continue;
+
+            return CreateExecutableCodeOverlay(candidate, codeOutput);
+        }
+
+        return null;
+    }
+
+    private void DrawExecutableCodeOverlay(SKCanvas canvas, ExecutableCodeOverlayLayout? overlay, ExecutableCodeRunState codeRunState, string codeOutput)
+    {
+        if (overlay is null)
+            return;
+
+        var currentOverlay = overlay.Value;
+
+        using var shadePaint = new SKPaint { Color = OverlayShade, IsAntialias = true };
+        using var panelPaint = new SKPaint { Color = PanelSurface, IsAntialias = true };
+        using var borderPaint = new SKPaint { Color = Accent, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 2f };
+        using var runButtonPaint = new SKPaint { Color = codeRunState == ExecutableCodeRunState.Running ? TextMuted : Accent, IsAntialias = true };
+
+        canvas.DrawRect(new SKRect(0f, 0f, SlideWidth, SlideHeight), shadePaint);
+        canvas.DrawRoundRect(new SKRoundRect(currentOverlay.PanelBounds, 14f), panelPaint);
+        canvas.DrawRoundRect(new SKRoundRect(currentOverlay.PanelBounds, 14f), borderPaint);
+
+        DrawText(canvas, $"{currentOverlay.Layout.Block.Language ?? "code"} · klicka eller tryck Enter", currentOverlay.PanelBounds.Left + 24f, currentOverlay.PanelBounds.Top + 34f, _bold, 18f, TextPrimary, SKTextAlign.Left);
+
+        canvas.DrawRoundRect(new SKRoundRect(currentOverlay.RunButtonBounds, 12f), runButtonPaint);
+        DrawText(canvas, codeRunState == ExecutableCodeRunState.Running ? "Kör..." : "Kör", currentOverlay.RunButtonBounds.MidX, currentOverlay.RunButtonBounds.MidY + 6f, _bold, 18f, Background, SKTextAlign.Center);
+
+        DrawCodeOverlayBlock(canvas, currentOverlay.CodeBounds, currentOverlay.Layout.Block.RawContent);
+
+        if (currentOverlay.OutputBounds.Height <= 0f)
+            return;
+
+        using var outputPaint = new SKPaint { Color = Surface, IsAntialias = true };
+        canvas.DrawRoundRect(new SKRoundRect(currentOverlay.OutputBounds, 10f), outputPaint);
+
+        var outputColor = codeRunState switch
+        {
+            ExecutableCodeRunState.Succeeded => SuccessFg,
+            ExecutableCodeRunState.Failed => ErrorFg,
+            ExecutableCodeRunState.Running => Accent,
+            _ => TextMuted,
+        };
+        DrawText(canvas, "Output", currentOverlay.OutputBounds.Left + 18f, currentOverlay.OutputBounds.Top + 26f, _bold, 16f, outputColor, SKTextAlign.Left);
+        string outputText = codeRunState switch
+        {
+            ExecutableCodeRunState.Running => "Kör kodblocket...",
+            _ when string.IsNullOrWhiteSpace(codeOutput) => "Ingen output ännu.",
+            _ => codeOutput,
+        };
+        DrawWrapped(canvas, outputText, currentOverlay.OutputBounds.Left + 18f, currentOverlay.OutputBounds.Top + 38f, currentOverlay.OutputBounds.Width - 36f, _mono, 17f, outputColor);
+    }
+
+    private void DrawCodeOverlayBlock(SKCanvas canvas, SKRect rect, string code)
+    {
+        using var bgPaint = new SKPaint { Color = CodeBg, IsAntialias = true };
+        canvas.DrawRoundRect(new SKRoundRect(rect, 10f), bgPaint);
+
+        var lines = code.Split('\n');
+        float ty = rect.Top + 28f;
+        foreach (var line in lines)
+        {
+            DrawText(canvas, line, rect.Left + 18f, ty, _mono, 18f, CodeFg, SKTextAlign.Left);
+            ty += 22f;
+        }
+    }
+
+    private static ExecutableCodeOverlayLayout CreateExecutableCodeOverlay(ExecutableCodeLayout layout, string codeOutput)
+    {
+        float panelWidth = SlideWidth * 0.82f;
+        float headerHeight = 56f;
+        float codeHeight = Math.Clamp((layout.Block.RawContent.Split('\n').Length * 22f) + 36f, 120f, 280f);
+        float outputHeight = string.IsNullOrWhiteSpace(codeOutput) ? 118f : Math.Clamp((codeOutput.Split('\n').Length * 22f) + 56f, 118f, 220f);
+        float panelHeight = headerHeight + codeHeight + outputHeight + 42f;
+        float panelLeft = (SlideWidth - panelWidth) / 2f;
+        float panelTop = Math.Max(48f, (SlideHeight - panelHeight) / 2f);
+        var panelBounds = new SKRect(panelLeft, panelTop, panelLeft + panelWidth, panelTop + panelHeight);
+        var runButtonBounds = new SKRect(panelBounds.Right - 132f, panelBounds.Top + 14f, panelBounds.Right - 20f, panelBounds.Top + 50f);
+        var codeBounds = new SKRect(panelBounds.Left + 20f, panelBounds.Top + headerHeight, panelBounds.Right - 20f, panelBounds.Top + headerHeight + codeHeight);
+        var outputBounds = new SKRect(panelBounds.Left + 20f, codeBounds.Bottom + 14f, panelBounds.Right - 20f, codeBounds.Bottom + 14f + outputHeight);
+        return new ExecutableCodeOverlayLayout(layout, panelBounds, runButtonBounds, codeBounds, outputBounds);
     }
 
     private static SKRect GetVisibleImageBounds(SKImage image)
@@ -720,6 +858,15 @@ internal sealed class SlideRenderer
     }
 
     public readonly record struct MermaidOverlayLayout(string Source, SKRect Bounds);
+
+    public readonly record struct ExecutableCodeLayout(int Index, ContentBlock Block, SKRect Bounds);
+
+    public readonly record struct ExecutableCodeOverlayLayout(
+        ExecutableCodeLayout Layout,
+        SKRect PanelBounds,
+        SKRect RunButtonBounds,
+        SKRect CodeBounds,
+        SKRect OutputBounds);
 
     private readonly record struct LayoutDebugRect(SKRect Bounds, SKColor Color, string Label);
 

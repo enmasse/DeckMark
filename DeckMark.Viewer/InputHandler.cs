@@ -7,16 +7,21 @@ namespace DeckMark.Viewer;
 /// </summary>
 internal sealed class InputHandler
 {
+    private const float ClickThreshold = 6f;
+
     private readonly ViewerState _state;
     private readonly Action<ConsoleKey> _commandSink;
+    private readonly Action<System.Numerics.Vector2>? _clickSink;
 
     private bool _dragging;
     private System.Numerics.Vector2 _lastMouse;
+    private System.Numerics.Vector2 _mouseDown;
 
-    public InputHandler(ViewerState state, Action<ConsoleKey> commandSink)
+    public InputHandler(ViewerState state, Action<ConsoleKey> commandSink, Action<System.Numerics.Vector2>? clickSink = null)
     {
         _state = state;
         _commandSink = commandSink;
+        _clickSink = clickSink;
     }
 
     public void Attach(IInputContext input)
@@ -49,6 +54,7 @@ internal sealed class InputHandler
         if (button == MouseButton.Left)
         {
             _dragging  = true;
+            _mouseDown = mouse.Position;
             _lastMouse = mouse.Position;
         }
     }
@@ -56,7 +62,13 @@ internal sealed class InputHandler
     private void OnMouseUp(IMouse mouse, MouseButton button)
     {
         if (button == MouseButton.Left)
+        {
             _dragging = false;
+
+            if (_clickSink is not null &&
+                System.Numerics.Vector2.Distance(_mouseDown, mouse.Position) <= ClickThreshold)
+                _clickSink(mouse.Position);
+        }
     }
 
     private void OnMouseMove(IMouse mouse, System.Numerics.Vector2 pos)
@@ -90,6 +102,7 @@ internal sealed class InputHandler
             Key.Escape => ConsoleKey.Escape,
             Key.W => ConsoleKey.W,
             Key.H or Key.Slash => ConsoleKey.H,
+            Key.R or Key.Enter => ConsoleKey.Enter,
             Key.S => ConsoleKey.S,
             Key.Q => ConsoleKey.Q,
             _ => default,
